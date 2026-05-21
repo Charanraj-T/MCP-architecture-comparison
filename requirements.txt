@@ -1,4 +1,6 @@
-tiktoken>=0.13
-openai>=2.0
+mcp>=1.27
+openai>=2.37
 rich>=15.0
-fastmcp>=3.0
+tiktoken>=0.13
+httpx>=0.28
+aiosqlite>=0.22
