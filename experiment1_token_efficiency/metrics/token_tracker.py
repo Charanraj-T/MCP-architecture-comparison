@@ -1,0 +1,107 @@
+from dataclasses import dataclass, field
+
+
+@dataclass
+class WorkflowMetrics:
+    workflow_name: str = ""
+    architecture_name: str = ""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+
+    user_prompt_tokens: int = 0
+    tool_schema_tokens: int = 0
+    orchestration_prompt_tokens: int = 0
+    memory_replay_tokens: int = 0
+    inter_agent_tokens: int = 0
+    output_tokens: int = 0
+
+    tools_exposed: int = 0
+    tools_used: int = 0
+    agent_hops: int = 0
+    mcps_activated: int = 0
+
+    latency_ms: float = 0.0
+
+    def snapshot(self) -> dict:
+        return {
+            "workflow": self.workflow_name,
+            "architecture": self.architecture_name,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "total_tokens": self.total_tokens,
+            "user_prompt_tokens": self.user_prompt_tokens,
+            "tool_schema_tokens": self.tool_schema_tokens,
+            "orchestration_prompt_tokens": self.orchestration_prompt_tokens,
+            "memory_replay_tokens": self.memory_replay_tokens,
+            "inter_agent_tokens": self.inter_agent_tokens,
+            "output_tokens": self.output_tokens,
+            "tools_exposed": self.tools_exposed,
+            "tools_used": self.tools_used,
+            "agent_hops": self.agent_hops,
+            "mcps_activated": self.mcps_activated,
+            "latency_ms": round(self.latency_ms, 1),
+        }
+
+
+class TokenTracker:
+    def __init__(self):
+        self.metrics: list[WorkflowMetrics] = []
+
+    def new_workflow(self, name: str, architecture: str) -> WorkflowMetrics:
+        m = WorkflowMetrics(
+            workflow_name=name,
+            architecture_name=architecture,
+        )
+        self.metrics.append(m)
+        return m
+
+    def get_results(self) -> list[dict]:
+        return [m.snapshot() for m in self.metrics]
+
+    def print_comparison(self):
+        from rich.console import Console
+        from rich.table import Table
+
+        if not self.metrics:
+            print("No metrics collected.")
+            return
+
+        grouped: dict[str, list[WorkflowMetrics]] = {}
+        for m in self.metrics:
+            grouped.setdefault(m.workflow_name, []).append(m)
+
+        for workflow, archs in grouped.items():
+            table = Table(title=f"\nWorkflow: {workflow}")
+            table.add_column("Metric", style="cyan")
+            for a in archs:
+                table.add_column(a.architecture_name, style="yellow")
+            metrics_keys = [
+                ("total_tokens", "Total Tokens"),
+                ("prompt_tokens", "Input Tokens"),
+                ("completion_tokens", "Output Tokens"),
+                ("reasoning_tokens", "Reasoning Tokens"),
+                ("tool_schema_tokens", "Tool Schema Tokens"),
+                ("orchestration_prompt_tokens", "Orchestration Tokens"),
+                ("inter_agent_tokens", "Inter-Agent Tokens"),
+                ("memory_replay_tokens", "Memory/Replay Tokens"),
+                ("tools_exposed", "Tools Exposed"),
+                ("tools_used", "Tools Used"),
+                ("agent_hops", "Agent Hops"),
+                ("mcps_activated", "MCPs Activated"),
+                ("latency_ms", "Latency (ms)"),
+            ]
+            for key, label in metrics_keys:
+                row = [label]
+                for a in archs:
+                    val = getattr(a, key, "N/A")
+                    if isinstance(val, float):
+                        row.append(f"{val:,.1f}")
+                    else:
+                        row.append(f"{val:,}")
+                table.add_row(*row)
+            console = Console()
+            console.print(table)
