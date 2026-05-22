@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 class TokenTracker:
@@ -19,12 +19,7 @@ class WorkflowMetrics:
     reasoning_tokens: int = 0
     total_tokens: int = 0
 
-    user_prompt_tokens: int = 0
     tool_schema_tokens: int = 0
-    orchestration_prompt_tokens: int = 0
-    memory_replay_tokens: int = 0
-    inter_agent_tokens: int = 0
-    output_tokens: int = 0
 
     tools_exposed: int = 0
     tools_used: int = 0

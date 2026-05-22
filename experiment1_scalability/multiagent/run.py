@@ -1,13 +1,12 @@
 import json
 import re
+import warnings
 from pathlib import Path
-
-import tiktoken
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient
 from common_tools import ToolRegistry
 from common_tools.factory import DOMAIN_TYPES
 from common_tools.parser import parse_tool_calls
-from metrics import WorkflowMetrics, JSONLogger, TraceCollector
+from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
 
@@ -24,17 +23,15 @@ SUPERVISOR_COMPILE = (
     "Worker Results:\n"
 )
 
-DOMAIN_AGENT_MAP = {d: d for d in DOMAIN_TYPES}
 
 
 class MultiAgentOrchestrator:
-    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict]):
+    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict], total_token_budget: int = 38000):
         self.client = client
         self.registry = registry
         self.mcps = mcps
+        self.total_token_budget = total_token_budget
         self.logger = JSONLogger(_TRACE_DIR)
-        self.trace = TraceCollector()
-        self._enc = tiktoken.get_encoding("cl100k_base")
 
     def _get_tools_for_agent(self, agent_domain: str) -> list[str]:
         names = []
@@ -54,6 +51,12 @@ class MultiAgentOrchestrator:
         acc["total_tokens"] += resp.usage.total_tokens
         acc["latency_ms"] += resp.latency_ms
         return acc
+
+    def _check_budget(self, metrics) -> bool:
+        if metrics.total_tokens > self.total_token_budget:
+            metrics.tools_truncated = -1
+            return True
+        return False
 
     async def _decompose(self, prompt: str) -> tuple[list[dict], dict]:
         resp = await self.client.chat([{"role": "user", "content": SUPERVISOR_DECOMPOSE + prompt}], temperature=0.1)
@@ -134,6 +137,10 @@ class MultiAgentOrchestrator:
         metrics.reasoning_tokens += decompose_usage["reasoning_tokens"]
         metrics.total_tokens += decompose_usage["total_tokens"]
 
+        if self._check_budget(metrics):
+            warnings.warn(f"Multi-Agent SKIPPED for {workflow['name']}: budget exceeded after decompose.")
+            return metrics
+
         worker_domains = list(set(s.get("agent", DOMAIN_TYPES[0]) for s in subtasks))
         mcp_activated_count = sum(1 for m in self.mcps if m["domain"] in worker_domains)
         metrics.mcps_activated = mcp_activated_count
@@ -155,6 +162,10 @@ class MultiAgentOrchestrator:
             metrics.reasoning_tokens += usage["reasoning_tokens"]
             metrics.total_tokens += usage["total_tokens"]
 
+        if self._check_budget(metrics):
+            warnings.warn(f"Multi-Agent SKIPPED for {workflow['name']}: budget exceeded after workers.")
+            return metrics
+
         metrics.tools_used = len(all_tools_used)
 
         compile_prompt = SUPERVISOR_COMPILE
@@ -167,6 +178,10 @@ class MultiAgentOrchestrator:
         metrics.completion_tokens += final_resp.usage.completion_tokens
         metrics.reasoning_tokens += final_resp.usage.reasoning_tokens
         metrics.total_tokens += final_resp.usage.total_tokens
+
+        if self._check_budget(metrics):
+            warnings.warn(f"Multi-Agent SKIPPED for {workflow['name']}: budget exceeded after compile.")
+            return metrics
 
         total_latency = decompose_usage["latency_ms"] + sum(u["latency_ms"] for _, _, _, u in worker_results) + final_resp.latency_ms
         metrics.latency_ms = round(total_latency, 1)

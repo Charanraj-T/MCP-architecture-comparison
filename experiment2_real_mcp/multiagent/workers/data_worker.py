@@ -1,17 +1,12 @@
 import json
 import re
-import tiktoken
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient
 from mcp_client import connect_all_mcps, close_all
 
 
 class DataWorker:
     def __init__(self, client: LMStudioClient):
         self.client = client
-        self._enc = tiktoken.get_encoding("cl100k_base")
-
-    def _count_tokens(self, text: str) -> int:
-        return len(self._enc.encode(text))
 
     def _tool_schema_block(self, tools: list) -> str:
         lines = []

@@ -1,7 +1,7 @@
 import json
 import tiktoken
 from pathlib import Path
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient
 from metrics import WorkflowMetrics, JSONLogger, TraceCollector
 from mcp_client import connect_all_mcps, close_all
 
@@ -64,7 +64,7 @@ class CentralizedOrchestrator:
     async def run(self, workflow: dict) -> WorkflowMetrics:
         wf_name = workflow["name"]
         metrics = WorkflowMetrics(workflow_name=wf_name, architecture_name="Centralized MCP")
-        metrics.user_prompt_tokens = self._count_tokens(workflow["prompt"])
+        metrics.prompt_tokens += self._count_tokens(workflow["prompt"])
 
         connections = await connect_all_mcps()
         metrics.mcp_servers_connected = len(connections)
@@ -104,7 +104,7 @@ class CentralizedOrchestrator:
             metrics.completion_tokens += response.usage.completion_tokens
             metrics.reasoning_tokens += response.usage.reasoning_tokens
             metrics.total_tokens += response.usage.total_tokens
-            metrics.output_tokens += response.usage.completion_tokens
+            metrics.completion_tokens += response.usage.completion_tokens
             metrics.agent_hops += 1
 
             content = response.content or ""

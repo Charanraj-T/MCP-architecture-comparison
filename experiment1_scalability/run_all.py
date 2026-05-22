@@ -7,10 +7,12 @@ from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from rich import box
+from pathlib import Path
 
 console = Console(record=True)
 
-from lmstudio_client import LMStudioClient
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from common import LMStudioClient, select_provider, get_token_budget
 from common_tools import generate_mcps, ToolRegistry
 from metrics import TokenTracker
 
@@ -60,7 +62,7 @@ def print_scalability_table(all_metrics: list, mcp_count: int):
         ("Tools Truncated", "tools_truncated"),
         ("Agent Hops", "agent_hops"),
         ("MCPs Activated", "mcps_activated"),
-        ("Latency (s)", "latency_ms"),
+        ("Latency (ms)", "latency_ms"),
     ]
 
     for label, key in keys:
@@ -90,10 +92,11 @@ def print_scalability_table(all_metrics: list, mcp_count: int):
 async def main():
     separator("MCP SCALABILITY COMPARISON")
 
-    client = LMStudioClient()
+    client, model_name = select_provider()
+    budget = get_token_budget(model_name)
     try:
         test = await client.chat([{"role": "user", "content": "Say ready"}], temperature=0.1, max_tokens=20)
-        console.print(f"[green]  Connected[/green] ({test.usage.total_tokens} tokens)\n")
+        console.print(f"[green]  Connected ({client.model})[/green] ({test.usage.total_tokens} tokens)\n")
     except Exception as e:
         console.print(f"[red]  Cannot connect: {e}[/red]")
         sys.exit(1)
@@ -113,7 +116,7 @@ async def main():
 
         for arch_name, ArchClass in ARCHITECTURES:
             console.print(f"  [bold yellow]{arch_name}[/bold yellow]")
-            orch = ArchClass(client, registry, mcps)
+            orch = ArchClass(client, registry, mcps, total_token_budget=budget)
 
             for wf in WORKFLOWS:
                 metrics = await orch.run(wf)

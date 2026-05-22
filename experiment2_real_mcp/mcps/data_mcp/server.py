@@ -14,7 +14,7 @@ def _get_conn():
     if _conn is None:
         _db_path = os.environ.get("DATA_MCP_DB", "")
         if not _db_path:
-            _db_path = str(Path(tempfile.mkdtemp()) / "experiment3.db")
+            _db_path = str(Path(tempfile.mkdtemp()) / "experiment2.db")
             _conn = sqlite3.connect(_db_path)
             _conn.execute("CREATE TABLE IF NOT EXISTS incidents (id INTEGER PRIMARY KEY, title TEXT, description TEXT, severity TEXT, status TEXT, created_at TEXT)")
             _conn.execute("CREATE TABLE IF NOT EXISTS deployments (id INTEGER PRIMARY KEY, service TEXT, version TEXT, status TEXT, timestamp TEXT)")
@@ -63,7 +63,7 @@ def list_tables() -> str:
 def describe_table(table: str) -> str:
     try:
         conn = _get_conn()
-        cur = conn.execute(f"PRAGMA table_info({table})")
+        cur = conn.execute(f"PRAGMA table_info('{table}')")
         rows = cur.fetchall()
         if not rows:
             return f"Table not found: {table}"

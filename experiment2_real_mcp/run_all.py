@@ -5,6 +5,8 @@ import os
 import json
 from datetime import datetime
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from rich.console import Console
@@ -14,8 +16,9 @@ from rich import box
 
 console = Console(record=True)
 
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient, select_provider
 from metrics import TokenTracker
+
 from centralized.orchestrator import CentralizedOrchestrator
 from federated.orchestrator import FederatedOrchestrator
 from multiagent.orchestrator import MultiAgentOrchestrator
@@ -68,19 +71,17 @@ def print_metrics(metrics):
 
 
 async def main():
-    separator("EXPERIMENT 3: REAL MCP ORCHESTRATION")
+    separator("EXPERIMENT 2: REAL MCP ORCHESTRATION")
 
-    console.print("[bold]Model:[/bold] qwen/qwen3-8b via LM Studio")
-    console.print("[bold]Endpoint:[/bold] http://localhost:1234/v1")
     console.print("[bold]MCP Servers:[/bold] dev (filesystem+git), docs (fetch+memory), data (SQLite), reasoning (planning)")
     console.print()
 
-    client = LMStudioClient()
+    client, _model_name = select_provider()
 
     try:
-        console.print("[dim]Verifying LM Studio connection...[/dim]")
+        console.print("[dim]Verifying connection...[/dim]")
         test = await client.chat([{"role": "user", "content": "Say 'ready' if you can hear me."}], temperature=0.1, max_tokens=20)
-        console.print(f"[green]  Connected[/green] ({test.usage.total_tokens} tokens)\n")
+        console.print(f"[green]  Connected ({client.model})[/green] ({test.usage.total_tokens} tokens)\n")
     except Exception as e:
         console.print(f"[red]  Cannot connect to LM Studio: {e}[/red]")
         sys.exit(1)

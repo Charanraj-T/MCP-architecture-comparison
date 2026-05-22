@@ -13,10 +13,6 @@ class ToolRegistry:
             self._tools.append(t)
             self._tools_by_name[t["name"]] = t
 
-    def clear(self):
-        self._tools.clear()
-        self._tools_by_name.clear()
-
     @property
     def all_tools(self):
         return list(self._tools)
@@ -26,9 +22,6 @@ class ToolRegistry:
 
     def get_tool_names(self) -> list[str]:
         return [t["name"] for t in self._tools]
-
-    def count_tools(self) -> int:
-        return len(self._tools)
 
     def schema_tokens(self, tool_names: list[str] = None) -> int:
         tools = self._tools

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 @dataclass
 class WorkflowMetrics:
@@ -10,12 +10,9 @@ class WorkflowMetrics:
     reasoning_tokens: int = 0
     total_tokens: int = 0
 
-    user_prompt_tokens: int = 0
     tool_schema_tokens: int = 0
     orchestration_prompt_tokens: int = 0
-    memory_replay_tokens: int = 0
     inter_agent_tokens: int = 0
-    output_tokens: int = 0
     router_tokens: int = 0
 
     tools_exposed: int = 0
@@ -35,12 +32,9 @@ class WorkflowMetrics:
             "completion_tokens": self.completion_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
-            "user_prompt_tokens": self.user_prompt_tokens,
             "tool_schema_tokens": self.tool_schema_tokens,
             "orchestration_prompt_tokens": self.orchestration_prompt_tokens,
-            "memory_replay_tokens": self.memory_replay_tokens,
             "inter_agent_tokens": self.inter_agent_tokens,
-            "output_tokens": self.output_tokens,
             "router_tokens": self.router_tokens,
             "tools_exposed": self.tools_exposed,
             "tools_used": self.tools_used,

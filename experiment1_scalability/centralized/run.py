@@ -3,26 +3,22 @@ import warnings
 from pathlib import Path
 
 import tiktoken
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient
 from common_tools import ToolRegistry
 from common_tools.parser import parse_tool_calls
-from metrics import WorkflowMetrics, JSONLogger, TraceCollector
+from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
 
-# Safety limit: total tool schema tokens allowed in the system prompt.
-# When exceeded, the run is skipped entirely (tools_truncated = -1)
-# rather than truncating tools, preserving clean experimental comparison.
-TOOL_SCHEMA_TOKEN_BUDGET = 3500
 
 
 class CentralizedOrchestrator:
-    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict]):
+    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict], total_token_budget: int = 38000):
         self.client = client
         self.registry = registry
         self.mcps = mcps
+        self.total_token_budget = total_token_budget
         self.logger = JSONLogger(_TRACE_DIR)
-        self.trace = TraceCollector()
         self._enc = tiktoken.get_encoding("cl100k_base")
 
     def _count_tokens(self, text: str) -> int:
@@ -40,13 +36,13 @@ class CentralizedOrchestrator:
         metrics.tool_schema_tokens = total_schema_tokens
         metrics.tools_exposed = len(all_tool_names)
 
-        if total_schema_tokens > TOOL_SCHEMA_TOKEN_BUDGET:
+        estimated_total = total_schema_tokens + self._count_tokens(workflow["prompt"]) + 200
+        if estimated_total > self.total_token_budget:
             metrics.tools_truncated = -1
             warnings.warn(
                 f"Centralized MCP SKIPPED for {workflow['name']}: "
-                f"{total_schema_tokens} schema tokens exceeds budget of {TOOL_SCHEMA_TOKEN_BUDGET} "
-                f"({len(all_tool_names)} tools across {len(self.mcps)} MCPs). "
-                f"Centralized architecture does not scale to this configuration.",
+                f"estimated {estimated_total} tokens exceeds budget of {self.total_token_budget} "
+                f"({len(all_tool_names)} tools across {len(self.mcps)} MCPs).",
                 ResourceWarning,
             )
             return metrics
@@ -77,6 +73,15 @@ class CentralizedOrchestrator:
             metrics.reasoning_tokens += response.usage.reasoning_tokens
             metrics.total_tokens += response.usage.total_tokens
             metrics.agent_hops += 1
+
+            if metrics.total_tokens > self.total_token_budget:
+                metrics.tools_truncated = -1
+                warnings.warn(
+                    f"Centralized MCP SKIPPED for {workflow['name']}: "
+                    f"{metrics.total_tokens} total tokens exceeded budget of {self.total_token_budget}.",
+                    ResourceWarning,
+                )
+                return metrics
 
             content = response.content or ""
             calls = parse_tool_calls(content)

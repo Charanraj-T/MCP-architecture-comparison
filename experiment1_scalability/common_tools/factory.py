@@ -1,4 +1,3 @@
-import json
 import copy
 
 DOMAIN_TYPES = [
@@ -454,24 +453,4 @@ def generate_mcps(count: int) -> list[dict]:
     return mcps
 
 
-def get_tools_for_domains(mcps: list[dict], domains: list[str]) -> list[dict]:
-    tools = []
-    for mcp in mcps:
-        if mcp["domain"] in domains:
-            tools.extend(mcp["tools"])
-    return tools
 
-
-def get_all_tools(mcps: list[dict]) -> list[dict]:
-    tools = []
-    for mcp in mcps:
-        tools.extend(mcp["tools"])
-    return tools
-
-
-def get_mcp_count_by_domain(mcps: list[dict]) -> dict[str, int]:
-    counts = {}
-    for mcp in mcps:
-        d = mcp["domain"]
-        counts[d] = counts.get(d, 0) + 1
-    return counts

@@ -71,7 +71,7 @@ class MCPConnection:
         result = await self._request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "experiment3", "version": "1.0"},
+            "clientInfo": {"name": "experiment2", "version": "1.0"},
         })
         notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
         self.process.stdin.write(notif.encode())
@@ -133,7 +133,7 @@ async def connect_all_mcps(keys: list[str] = None) -> dict[str, MCPConnection]:
         try:
             results[k] = await task
         except Exception as e:
-            print(f"  [red]Failed to connect {k} MCP: {e}[/red]")
+            print(f"  Failed to connect {k} MCP: {e}")
     return results
 
 

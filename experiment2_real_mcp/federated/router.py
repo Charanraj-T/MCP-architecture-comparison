@@ -1,6 +1,6 @@
 import json
 import re
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient
 from mcp_client import MCP_DEFINITIONS
 
 
@@ -30,8 +30,8 @@ async def classify_mcps(client: LMStudioClient, user_prompt: str) -> tuple[list[
             mcps = data.get("mcps", [])
             valid = [m for m in mcps if m in MCP_DEFINITIONS]
             if valid:
-                return valid, response.usage.total_tokens
+                return valid, response.usage.total_tokens if response.usage else 0
     except (json.JSONDecodeError, KeyError):
         pass
 
-    return list(MCP_DEFINITIONS.keys()), response.usage.total_tokens
+    return list(MCP_DEFINITIONS.keys()), response.usage.total_tokens if response.usage else 0

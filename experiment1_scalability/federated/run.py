@@ -1,15 +1,17 @@
 import json
 import re
+import warnings
 from pathlib import Path
 
 import tiktoken
-from lmstudio_client import LMStudioClient
+from common import LMStudioClient
 from common_tools import ToolRegistry
 from common_tools.factory import DOMAIN_TYPES
 from common_tools.parser import parse_tool_calls
-from metrics import WorkflowMetrics, JSONLogger, TraceCollector
+from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
+
 
 
 def _extract_domains(text: str) -> list[str]:
@@ -26,13 +28,16 @@ def _extract_domains(text: str) -> list[str]:
 
 
 class FederatedOrchestrator:
-    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict]):
+    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict], total_token_budget: int = 38000):
         self.client = client
         self.registry = registry
         self.mcps = mcps
+        self.total_token_budget = total_token_budget
         self.logger = JSONLogger(_TRACE_DIR)
-        self.trace = TraceCollector()
         self._enc = tiktoken.get_encoding("cl100k_base")
+
+    def _count_tokens(self, text: str) -> int:
+        return len(self._enc.encode(text))
 
     def _get_tools_for_domains(self, domains: list[str]) -> list[str]:
         names = []
@@ -48,7 +53,6 @@ class FederatedOrchestrator:
             architecture_name="Federated MCP",
         )
 
-        total_mcps = len(self.mcps)
         domain_desc = "\n".join(f"- {d}" for d in DOMAIN_TYPES)
         router_prompt = (
             "Classify this request into relevant domains. "
@@ -58,6 +62,12 @@ class FederatedOrchestrator:
         )
 
         router_response = await self.client.chat([{"role": "user", "content": router_prompt}], temperature=0.1)
+        metrics.prompt_tokens += router_response.usage.prompt_tokens
+        metrics.completion_tokens += router_response.usage.completion_tokens
+        metrics.reasoning_tokens += router_response.usage.reasoning_tokens
+        metrics.total_tokens += router_response.usage.total_tokens
+        total_latency = router_response.latency_ms
+
         domains = _extract_domains(router_response.content or "")
 
         active_tool_names = self._get_tools_for_domains(domains)
@@ -65,6 +75,19 @@ class FederatedOrchestrator:
 
         tool_text = self.registry.tool_schema_text(active_tool_names)
         schema_tokens = self.registry.schema_tokens(active_tool_names)
+
+        estimated = schema_tokens + self._count_tokens(router_prompt) + 200
+        if estimated > self.total_token_budget:
+            metrics.tool_schema_tokens = schema_tokens
+            metrics.tools_exposed = len(active_tool_names)
+            metrics.mcps_activated = mcp_count
+            metrics.tools_truncated = -1
+            warnings.warn(
+                f"Federated MCP SKIPPED for {workflow['name']}: "
+                f"estimated {estimated} tokens exceeds budget of {self.total_token_budget}.",
+                ResourceWarning,
+            )
+            return metrics
 
         metrics.tool_schema_tokens = schema_tokens
         metrics.tools_exposed = len(active_tool_names)
@@ -84,7 +107,6 @@ class FederatedOrchestrator:
         ]
 
         tools_used = set()
-        total_latency = router_response.latency_ms
 
         for turn in range(6):
             response = await self.client.chat(messages, temperature=0.1)
@@ -94,6 +116,15 @@ class FederatedOrchestrator:
             metrics.reasoning_tokens += response.usage.reasoning_tokens
             metrics.total_tokens += response.usage.total_tokens
             metrics.agent_hops += 1
+
+            if metrics.total_tokens > self.total_token_budget:
+                metrics.tools_truncated = -1
+                warnings.warn(
+                    f"Federated MCP SKIPPED for {workflow['name']}: "
+                    f"{metrics.total_tokens} total tokens exceeded budget of {self.total_token_budget}.",
+                    ResourceWarning,
+                )
+                return metrics
 
             content = response.content or ""
             calls = parse_tool_calls(content)

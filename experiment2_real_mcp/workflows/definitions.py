@@ -11,7 +11,6 @@ WORKFLOWS = [
             "6. Fetch documentation from a relevant URL\n"
             "7. Summarize everything into a coherent incident report"
         ),
-        "expected_mcps": ["dev", "data", "docs", "reasoning"],
     },
     {
         "name": "Deployment Analysis",
@@ -23,7 +22,6 @@ WORKFLOWS = [
             "4. Check git diff between the last successful and failed deployment\n"
             "5. Summarize what went wrong and what changed"
         ),
-        "expected_mcps": ["dev", "data", "reasoning"],
     },
     {
         "name": "Full System Audit",
@@ -38,6 +36,5 @@ WORKFLOWS = [
             "7. Create a structured reasoning plan for remediation\n"
             "8. Compile a complete audit report"
         ),
-        "expected_mcps": ["dev", "data", "docs", "reasoning"],
     },
 ]
