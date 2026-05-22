@@ -1,4 +1,5 @@
 import json
+import re
 import tiktoken
 from pathlib import Path
 from lmstudio_client import LMStudioClient
@@ -108,7 +109,6 @@ class DevWorker:
                 messages.append({"role": "user", "content": f"Tool results:\n{json.dumps(results, indent=2)}\n\nContinue or FINAL_ANSWER."})
             else:
                 messages.append({"role": "assistant", "content": content})
-                import re
                 match = re.search(r'FINAL_ANSWER:\s*(.*)', content, re.DOTALL)
                 answer = match.group(1).strip() if match else content
                 await close_all(connections)

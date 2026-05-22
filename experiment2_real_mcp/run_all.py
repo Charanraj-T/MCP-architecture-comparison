@@ -3,6 +3,7 @@ import asyncio
 import sys
 import os
 import json
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -10,6 +11,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
+
+console = Console(record=True)
+
 from lmstudio_client import LMStudioClient
 from metrics import TokenTracker
 from centralized.orchestrator import CentralizedOrchestrator
@@ -17,7 +21,6 @@ from federated.orchestrator import FederatedOrchestrator
 from multiagent.orchestrator import MultiAgentOrchestrator
 from workflows import WORKFLOWS
 
-console = Console()
 
 def separator(title: str):
     console.print()
@@ -25,6 +28,7 @@ def separator(title: str):
     console.print(f"{title:^66}", style="bold cyan")
     console.print("=" * 66, style="bold cyan")
     console.print()
+
 
 def print_metrics(metrics):
     snap = metrics.snapshot()
@@ -61,6 +65,7 @@ def print_metrics(metrics):
         else:
             table.add_row(label, f"{val:,}")
     console.print(table)
+
 
 async def main():
     separator("EXPERIMENT 3: REAL MCP ORCHESTRATION")
@@ -119,10 +124,18 @@ async def main():
         border_style="cyan",
     ))
 
+    os.makedirs("results", exist_ok=True)
     results = all_metrics.get_results()
     with open("results/comparison_results.json", "w") as f:
         json.dump(results, f, indent=2)
     console.print(f"\n[dim]Results saved to results/comparison_results.json[/dim]")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs("reports", exist_ok=True)
+    with open(f"reports/report_{ts}.html", "w") as f:
+        f.write(console.export_html())
+    console.print(f"[dim]HTML report saved to reports/report_{ts}.html[/dim]")
+
     console.print("[dim]See traces/ directory for detailed JSON trace logs.[/dim]")
     console.print()
     console.print("[bold green]Done![/bold green]")

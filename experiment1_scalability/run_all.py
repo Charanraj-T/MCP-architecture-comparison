@@ -2,9 +2,13 @@
 import asyncio
 import sys
 import json
+import os
+from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from rich import box
+
+console = Console(record=True)
 
 from lmstudio_client import LMStudioClient
 from common_tools import generate_mcps, ToolRegistry
@@ -23,8 +27,6 @@ ARCHITECTURES = [
     ("Federated MCP", FederatedOrchestrator),
     ("Multi-Agent", MultiAgentOrchestrator),
 ]
-
-console = Console()
 
 
 def separator(title):
@@ -141,11 +143,17 @@ async def main():
     for mcp_count in MCP_COUNTS:
         print_scalability_table(tracker.metrics, mcp_count)
 
-    # Save results
+    os.makedirs("results", exist_ok=True)
     results = tracker.get_results()
     with open("results/scalability_results.json", "w") as f:
         json.dump(results, f, indent=2)
     console.print(f"\n[dim]Results saved to results/scalability_results.json[/dim]")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs("reports", exist_ok=True)
+    with open(f"reports/report_{ts}.html", "w") as f:
+        f.write(console.export_html())
+    console.print(f"[dim]HTML report saved to reports/report_{ts}.html[/dim]")
     console.print()
 
 

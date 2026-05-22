@@ -4,7 +4,7 @@ from lmstudio_client import LMStudioClient
 from mcp_client import MCP_DEFINITIONS
 
 
-async def classify_mcps(client: LMStudioClient, user_prompt: str) -> list[str]:
+async def classify_mcps(client: LMStudioClient, user_prompt: str) -> tuple[list[str], int]:
     mcp_descriptions = "\n".join(
         f"- {key}: {defn['description']}"
         for key, defn in MCP_DEFINITIONS.items()
