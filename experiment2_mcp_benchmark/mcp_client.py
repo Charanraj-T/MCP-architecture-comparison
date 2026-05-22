@@ -149,7 +149,7 @@ async def connect_mcp(server_key: str, env: dict = None) -> MCPConnection:
         definition.command, *definition.args,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         env=merged_env,
     )
 

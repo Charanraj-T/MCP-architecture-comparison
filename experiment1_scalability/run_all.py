@@ -88,26 +88,30 @@ def print_scalability_table(all_metrics: list, mcp_count: int):
 
 
 def select_mcp_counts():
-    import sys as _sys
-    if len(_sys.argv) > 1:
+    from common_tools.factory import DOMAIN_TYPES
+    n_domains = len(DOMAIN_TYPES)
+    if len(sys.argv) > 1:
         try:
-            counts = [int(x) for x in _sys.argv[1].split(",")]
-            counts = [c for c in counts if c > 0]
+            counts = [int(x) for x in sys.argv[1].split(",")]
+            counts = sorted(c for c in counts if c > 0 and c % n_domains == 0)
             if counts:
-                return sorted(counts)
+                return counts
+            console.print(f"[red]All counts must be divisible by {n_domains}. Using defaults.[/red]")
         except ValueError:
             pass
     console.print("[bold]Select MCP counts to test:[/bold]")
+    console.print(f"  (must be divisible by {n_domains})")
     console.print("  Default: 10, 20, 50, 100")
     raw = input("MCP counts (comma-separated, Enter for all): ").strip()
     if not raw:
         return [10, 20, 50, 100]
     try:
         counts = [int(x.strip()) for x in raw.split(",")]
-        counts = [c for c in counts if c > 0]
-        if not counts:
-            raise ValueError
-        return sorted(counts)
+        counts = sorted(c for c in counts if c > 0 and c % n_domains == 0)
+        if counts:
+            return counts
+        console.print(f"[red]All counts must be divisible by {n_domains}. Using defaults: 10, 20, 50, 100[/red]")
+        return [10, 20, 50, 100]
     except ValueError:
         console.print("[red]Invalid input, using defaults: 10, 20, 50, 100[/red]")
         return [10, 20, 50, 100]
@@ -143,11 +147,10 @@ async def main():
 
         for arch_name, ArchClass in ARCHITECTURES:
             console.print(f"  [bold yellow]{arch_name}[/bold yellow]")
-            orch = ArchClass(client, registry, mcps, total_token_budget=budget)
+            orch = ArchClass(client, registry, mcps, total_token_budget=budget, mcp_count=mcp_count)
 
             for wf in WORKFLOWS:
                 metrics = await orch.run(wf)
-                metrics.mcps_total = mcp_count
                 tracker.metrics.append(metrics)
 
                 if metrics.tools_truncated == -1:

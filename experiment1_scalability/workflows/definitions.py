@@ -6,7 +6,6 @@ WORKFLOWS = [
             "Read the main implementation file to understand the logic. "
             "Report what you find."
         ),
-        "target_domains": ["code_search"],
     },
     {
         "name": "Incident Investigation",
@@ -16,7 +15,6 @@ WORKFLOWS = [
             "query CPU metrics for the last hour, list recent deployments, "
             "and create a high-priority incident ticket. Summarize all findings."
         ),
-        "target_domains": ["monitoring", "log_analysis", "deployment", "project_mgmt"],
     },
     {
         "name": "Full System Audit",
@@ -33,10 +31,5 @@ WORKFLOWS = [
             "and send alerts if problems are detected. "
             "Provide a complete audit report."
         ),
-        "target_domains": [
-            "code_search", "log_analysis", "deployment", "monitoring",
-            "database", "networking", "security", "documentation",
-            "project_mgmt", "notifications",
-        ],
     },
 ]

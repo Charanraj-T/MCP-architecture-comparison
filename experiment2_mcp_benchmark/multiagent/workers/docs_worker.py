@@ -1,5 +1,7 @@
 import json
 import re
+import time
+import tiktoken
 from common import LMStudioClient
 from mcp_client import connect_all_mcps, close_all
 
@@ -57,12 +59,17 @@ class DocsWorker:
         all_tools = []
         for conn in connections.values():
             all_tools.extend(conn.tools)
+        tools_exposed = len(all_tools)
+
+        schema_block = self._tool_schema_block(all_tools)
+        _enc = tiktoken.get_encoding("cl100k_base")
+        tool_schema_tokens = len(_enc.encode(schema_block))
 
         system = (
             "You are a Docs Agent specializing in documentation retrieval and memory management.\n"
             'Call tools: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
             "After all calls: FINAL_ANSWER: <answer>\n\n"
-            "Available tools:\n" + self._tool_schema_block(all_tools)
+            "Available tools:\n" + schema_block
         )
 
         messages = [
@@ -71,15 +78,19 @@ class DocsWorker:
         ]
 
         for turn in range(6):
+            turn_start = time.monotonic()
             resp = await self.client.chat(messages, temperature=0.1)
+            turn_elapsed = (time.monotonic() - turn_start) * 1000
             if resp.error:
                 await close_all(connections)
-                return {"agent": "docs_agent", "answer": "", "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count}
+                return {"agent": "docs_agent", "answer": "", "usage": usage_data, "tools_used": list(tools_used),                     "mcps_activated": mcps_count,
+                    "tool_schema_tokens": tool_schema_tokens,
+                    "tools_exposed": tools_exposed}
             usage_data["prompt_tokens"] += resp.usage.prompt_tokens
             usage_data["completion_tokens"] += resp.usage.completion_tokens
             usage_data["reasoning_tokens"] += resp.usage.reasoning_tokens
             usage_data["total_tokens"] += resp.usage.total_tokens
-            usage_data["latency_ms"] += resp.latency_ms
+            usage_data["latency_ms"] += turn_elapsed
             usage_data["hops"] += 1
 
             content = resp.content or ""
@@ -90,7 +101,10 @@ class DocsWorker:
                 for tc in calls:
                     name = tc.get("name", "")
                     args = tc.get("arguments", {})
+                    tool_found = False
                     for conn in connections.values():
+                        if tool_found:
+                            break
                         for t in conn.tools:
                             if t.name == name:
                                 result = await conn.call_tool(name, args)
@@ -103,6 +117,7 @@ class DocsWorker:
                                     else:
                                         text += str(c)
                                 results.append({name: text})
+                                tool_found = True
                                 break
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": f"Tool results:\n{json.dumps(results, indent=2)}\n\nContinue or FINAL_ANSWER."})
@@ -111,7 +126,7 @@ class DocsWorker:
                 match = re.search(r'FINAL_ANSWER:\s*(.*)', content, re.DOTALL)
                 answer = match.group(1).strip() if match else content
                 await close_all(connections)
-                return {"agent": "docs_agent", "answer": answer, "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count}
+                return {"agent": "docs_agent", "answer": answer, "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count, "tool_schema_tokens": tool_schema_tokens, "tools_exposed": tools_exposed}
 
         await close_all(connections)
-        return {"agent": "docs_agent", "answer": content, "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count}
+        return {"agent": "docs_agent", "answer": content, "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count, "tool_schema_tokens": tool_schema_tokens, "tools_exposed": tools_exposed}

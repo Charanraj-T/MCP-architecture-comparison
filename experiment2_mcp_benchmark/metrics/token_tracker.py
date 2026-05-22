@@ -53,11 +53,6 @@ class TokenTracker:
     def __init__(self):
         self.metrics: list[WorkflowMetrics] = []
 
-    def new_workflow(self, name: str, architecture: str) -> WorkflowMetrics:
-        m = WorkflowMetrics(workflow_name=name, architecture_name=architecture)
-        self.metrics.append(m)
-        return m
-
     def get_results(self) -> list[dict]:
         return [m.snapshot() for m in self.metrics]
 
@@ -93,6 +88,7 @@ class TokenTracker:
                 ("agent_hops", "Agent Hops"),
                 ("mcps_activated", "MCPs Activated"),
                 ("mcp_servers_connected", "MCP Connections"),
+                ("tools_truncated", "Tools Truncated"),
                 ("latency_ms", "Latency (ms)"),
             ]
             for key, label in keys:

@@ -1,6 +1,6 @@
 # Experiment 2: Real MCP Benchmark
 
-Tests 3 architectures — **Centralized (1MCP), Federated (smartmcp), Multi-Agent** — against **real npx/uvx MCP servers**: filesystem, git, fetch, memory, SQLite, and sequential thinking, running as subprocesses with stdio transport.
+Tests 3 architectures — **Centralized (1MCP), Federated (Bifrost Code Mode), Multi-Agent** — against **real npx/uvx MCP servers**: filesystem, git, fetch, memory, SQLite, and sequential thinking, running as subprocesses with stdio transport.
 
 ## MCP Servers (via npx/uvx, no global installs)
 
@@ -22,11 +22,12 @@ All servers auto-download on first run via `npx -y` / `uvx`. Nothing installed g
 - Tools namespaced as `{server}_1mcp_{tool}` — **all 46 tools in system prompt**
 - Measures proxy overhead, connection efficiency (1 vs 6), 1MCP routing
 
-### 2. Federated (smartmcp)
-- All 6 servers behind [`smartmcp`](https://github.com/spak2005/smart-mcp) semantic router with FAISS vector index
-- Only 2 tools exposed: `search_tools` + `call_discovered_tool`
-- LLM discovers tools dynamically via semantic search — only relevant schemas loaded
-- Measures dynamic tool discovery, semantic search accuracy, federated token efficiency
+### 2. Federated (Bifrost Code Mode)
+- All 6 servers behind [`Bifrost`](https://github.com/maximhq/bifrost) AI gateway with Code Mode
+- Only 4 meta-tools exposed: `listToolFiles`, `readToolFile`, `getToolDocs`, `executeToolCode`
+- LLM discovers servers on-demand and writes Python (Starlark) to orchestrate tools in a sandbox
+- Multiple MCP tool calls happen inside a single `executeToolCode` call — 50%+ token reduction
+- Measures Code Mode efficiency, dynamic discovery overhead, sandbox execution cost
 
 ### 3. Multi-Agent
 - Supervisor decomposes task → parallel workers with isolated MCP connections
@@ -55,7 +56,7 @@ Located in `sandbox/`:
 - **Input/Output/Reasoning/Total Tokens** — LLM token consumption from API responses
 - **Tool Schema Tokens** — bytes of tool schemas injected into system prompt
 - **Orchestration Prompt Tokens** — architecture-specific instruction overhead
-- **Router Tokens** — tokens consumed by the semantic routing call (federated only)
+- **Router Tokens** — tokens consumed by semantic routing (0 for Bifrost — Code Mode discovery is in normal turns)
 - **Inter-Agent Tokens** — serialized worker results passed between agents (multi-agent only)
 - **Tools Exposed / Used / Truncated** — filtering and skip behaviour
 - **Real Tool Calls** — count of actual MCP tool invocations

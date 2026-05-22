@@ -15,7 +15,7 @@ from rich import box
 
 console = Console(record=True)
 
-from common import LMStudioClient, select_provider
+from common import select_provider
 from metrics import TokenTracker
 
 from centralized.orchestrator import CentralizedOrchestrator
@@ -73,7 +73,7 @@ async def main():
     separator("EXPERIMENT 2: REAL MCP ORCHESTRATION BENCHMARK")
 
     console.print("[bold]MCP Servers:[/bold] filesystem (npx), git (uvx), fetch (npx), memory (npx), SQLite (uvx), sequential-thinking (npx)")
-    console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]smartmcp[/blue] router), Multi-Agent (direct)")
+    console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]Bifrost[/blue] Code Mode), Multi-Agent (direct)")
     console.print()
 
     client, _model_name = select_provider()
@@ -81,6 +81,9 @@ async def main():
     try:
         console.print("[dim]Verifying connection...[/dim]")
         test = await client.chat([{"role": "user", "content": "Say 'ready' if you can hear me."}], temperature=0.1, max_tokens=20)
+        if test.error:
+            console.print(f"[red]  Connection error: {test.error}[/red]")
+            sys.exit(1)
         console.print(f"[green]  Connected ({client.model})[/green] ({test.usage.total_tokens} tokens)\n")
     except Exception as e:
         console.print(f"[red]  Cannot connect to LM Studio: {e}[/red]")
@@ -89,25 +92,29 @@ async def main():
     all_metrics = TokenTracker()
 
     architectures = [
+        ("Federated (Bifrost)", FederatedOrchestrator),
         ("Centralized (1MCP)", CentralizedOrchestrator),
-        ("Federated (smartmcp)", FederatedOrchestrator),
         ("Multi-Agent", MultiAgentOrchestrator),
     ]
 
     for name, ArchClass in architectures:
         separator(f"RUNNING: {name}")
         orchestrator = ArchClass(client)
-        for i, wf in enumerate(WORKFLOWS, 1):
-            console.print(f"\n[bold yellow]  Workflow {i}: {wf['name']}[/bold yellow]")
-            console.print("  " + "─" * 60, style="dim")
-            try:
-                metrics = await orchestrator.run(wf)
-                all_metrics.metrics.append(metrics)
-                print_metrics(metrics)
-            except Exception as e:
-                console.print(f"  [red]Error: {e}[/red]")
-                import traceback
-                traceback.print_exc()
+        try:
+            for i, wf in enumerate(WORKFLOWS, 1):
+                console.print(f"\n[bold yellow]  Workflow {i}: {wf['name']}[/bold yellow]")
+                console.print("  " + "─" * 60, style="dim")
+                try:
+                    metrics = await orchestrator.run(wf)
+                    all_metrics.metrics.append(metrics)
+                    print_metrics(metrics)
+                except Exception as e:
+                    console.print(f"  [red]Error: {e}[/red]")
+                    import traceback
+                    traceback.print_exc()
+        finally:
+            if hasattr(orchestrator, 'close'):
+                await orchestrator.close()
 
     separator("FINAL COMPARISON")
     all_metrics.print_comparison(console)

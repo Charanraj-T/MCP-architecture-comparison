@@ -28,11 +28,12 @@ def _extract_domains(text: str) -> list[str]:
 
 
 class FederatedOrchestrator:
-    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict], total_token_budget: int = 38000):
+    def __init__(self, client: LMStudioClient, registry: ToolRegistry, mcps: list[dict], total_token_budget: int = 38000, mcp_count: int = 0):
         self.client = client
         self.registry = registry
         self.mcps = mcps
         self.total_token_budget = total_token_budget
+        self.mcp_count = mcp_count
         self.logger = JSONLogger(_TRACE_DIR)
         self._enc = tiktoken.get_encoding("cl100k_base")
 
@@ -47,11 +48,18 @@ class FederatedOrchestrator:
                     names.append(t["name"])
         return names
 
+    def _estimate_next_request_tokens(self, messages: list[dict]) -> int:
+        total = 0
+        for m in messages:
+            total += self._count_tokens(m.get("content", ""))
+        return total + 500
+
     async def run(self, workflow: dict) -> WorkflowMetrics:
         metrics = WorkflowMetrics(
             workflow_name=workflow["name"],
             architecture_name="Federated MCP",
         )
+        metrics.mcps_total = self.mcp_count
 
         domain_desc = "\n".join(f"- {d}" for d in DOMAIN_TYPES)
         router_prompt = (
@@ -75,27 +83,62 @@ class FederatedOrchestrator:
         domains = _extract_domains(router_response.content or "")
 
         active_tool_names = self._get_tools_for_domains(domains)
-        mcp_count = sum(1 for m in self.mcps if m["domain"] in domains)
+        active_mcp_count = sum(1 for m in self.mcps if m["domain"] in domains)
 
-        tool_text = self.registry.tool_schema_text(active_tool_names)
         schema_tokens = self.registry.schema_tokens(active_tool_names)
+        prompt_overhead = self._count_tokens(workflow["prompt"]) + 200
 
-        estimated = schema_tokens + self._count_tokens(router_prompt) + 200
-        if estimated > self.total_token_budget:
+        system_overhead = self._count_tokens(
+            f"You are an AI assistant with access to domain MCPs: {', '.join(domains)}.\n"
+            'Output: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
+            "After all calls: FINAL_ANSWER: <answer>\n\n"
+            "Available tools:\n"
+        )
+
+        usable_budget = self.total_token_budget - prompt_overhead - system_overhead - 500
+        if usable_budget <= 0:
             metrics.tool_schema_tokens = schema_tokens
             metrics.tools_exposed = len(active_tool_names)
-            metrics.mcps_activated = mcp_count
+            metrics.mcps_activated = active_mcp_count
             metrics.tools_truncated = -1
             warnings.warn(
                 f"Federated MCP SKIPPED for {workflow['name']}: "
-                f"estimated {estimated} tokens exceeds budget of {self.total_token_budget}.",
+                f"no budget for tools after overhead.",
                 ResourceWarning,
             )
             return metrics
 
-        metrics.tool_schema_tokens = schema_tokens
-        metrics.tools_exposed = len(active_tool_names)
-        metrics.mcps_activated = mcp_count
+        selected_names = []
+        running_total = 0
+        for name in active_tool_names:
+            tool = self.registry.get_tool(name)
+            if tool is None:
+                continue
+            text = f"## {tool['name']}\nDescription: {tool['description']}\nSchema: {json.dumps(tool['input_schema'])}\n\n"
+            tokens = self._count_tokens(text)
+            if running_total + tokens <= usable_budget:
+                selected_names.append(name)
+                running_total += tokens
+
+        if not selected_names:
+            metrics.tool_schema_tokens = schema_tokens
+            metrics.tools_exposed = len(active_tool_names)
+            metrics.mcps_activated = active_mcp_count
+            metrics.tools_truncated = -1
+            warnings.warn(
+                f"Federated MCP SKIPPED for {workflow['name']}: "
+                f"tool schemas too large for budget.",
+                ResourceWarning,
+            )
+            return metrics
+
+        tool_text = self.registry.tool_schema_text(selected_names)
+        schema_slice_tokens = self.registry.schema_tokens(selected_names)
+
+        metrics.tool_schema_tokens = schema_slice_tokens
+        metrics.tools_exposed = len(selected_names)
+        metrics.tools_truncated = len(active_tool_names) - len(selected_names)
+        metrics.mcps_activated = active_mcp_count
         metrics.agent_hops = 0
 
         system = (
@@ -113,26 +156,25 @@ class FederatedOrchestrator:
         tools_used = set()
 
         for turn in range(6):
+            next_est = self._estimate_next_request_tokens(messages)
+            if next_est > self.total_token_budget:
+                warnings.warn(
+                    f"Federated MCP stopping early for {workflow['name']}: "
+                    f"estimated next request {next_est} tokens exceeds budget.",
+                    ResourceWarning,
+                )
+                break
+
             response = await self.client.chat(messages, temperature=0.1)
             if response.error:
-                metrics.tools_truncated = -1
-                warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: model crashed ({response.error})", ResourceWarning)
-                return metrics
+                warnings.warn(f"Federated MCP: model error at turn {turn} ({response.error})", ResourceWarning)
+                break
             total_latency += response.latency_ms
             metrics.prompt_tokens += response.usage.prompt_tokens
             metrics.completion_tokens += response.usage.completion_tokens
             metrics.reasoning_tokens += response.usage.reasoning_tokens
             metrics.total_tokens += response.usage.total_tokens
             metrics.agent_hops += 1
-
-            if metrics.total_tokens > self.total_token_budget:
-                metrics.tools_truncated = -1
-                warnings.warn(
-                    f"Federated MCP SKIPPED for {workflow['name']}: "
-                    f"{metrics.total_tokens} total tokens exceeded budget of {self.total_token_budget}.",
-                    ResourceWarning,
-                )
-                return metrics
 
             content = response.content or ""
             calls = parse_tool_calls(content)
@@ -148,6 +190,7 @@ class FederatedOrchestrator:
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": f"Tool results:\n{json.dumps(results, indent=2)}\n\nContinue or provide FINAL_ANSWER."})
             else:
+                messages.append({"role": "assistant", "content": content})
                 break
 
         metrics.tools_used = len(tools_used)

@@ -38,6 +38,7 @@ class WorkflowMetrics:
             "completion_tokens": self.completion_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
+            "tool_schema_tokens": self.tool_schema_tokens,
             "tools_exposed": self.tools_exposed,
             "tools_used": self.tools_used,
             "tools_truncated": self.tools_truncated,
