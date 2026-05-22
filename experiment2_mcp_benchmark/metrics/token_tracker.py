@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class WorkflowMetrics:
     workflow_name: str = ""
@@ -17,6 +18,7 @@ class WorkflowMetrics:
 
     tools_exposed: int = 0
     tools_used: int = 0
+    tools_truncated: int = 0
     agent_hops: int = 0
     mcps_activated: int = 0
     mcp_servers_connected: int = 0
@@ -38,12 +40,14 @@ class WorkflowMetrics:
             "router_tokens": self.router_tokens,
             "tools_exposed": self.tools_exposed,
             "tools_used": self.tools_used,
+            "tools_truncated": self.tools_truncated,
             "agent_hops": self.agent_hops,
             "mcps_activated": self.mcps_activated,
             "mcp_servers_connected": self.mcp_servers_connected,
             "real_tool_calls": self.real_tool_calls,
             "latency_ms": round(self.latency_ms, 1),
         }
+
 
 class TokenTracker:
     def __init__(self):
@@ -57,8 +61,8 @@ class TokenTracker:
     def get_results(self) -> list[dict]:
         return [m.snapshot() for m in self.metrics]
 
-    def print_comparison(self):
-        from rich.console import Console
+    def print_comparison(self, console: "Console" = None):
+        from rich.console import Console as _Console
         from rich.table import Table
 
         if not self.metrics:
@@ -100,5 +104,4 @@ class TokenTracker:
                     else:
                         row.append(f"{val:,}")
                 table.add_row(*row)
-            console = Console()
-            console.print(table)
+            (console or _Console()).print(table)

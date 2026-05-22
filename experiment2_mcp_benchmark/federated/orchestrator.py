@@ -1,12 +1,46 @@
+import asyncio
 import json
+import subprocess
 import tiktoken
 from pathlib import Path
 from common import LMStudioClient
 from metrics import WorkflowMetrics, JSONLogger, TraceCollector
-from mcp_client import connect_all_mcps, close_all
-from federated.router import classify_mcps
+from mcp_client import MCPConnection
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
+_SANDBOX = Path(__file__).resolve().parent.parent / "sandbox"
+
+
+def _build_smartmcp_config() -> dict:
+    return {
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", str(_SANDBOX)],
+            },
+            "git": {
+                "command": "uvx",
+                "args": ["mcp-server-git", "--repository", str(_SANDBOX / "repo")],
+            },
+            "fetch": {
+                "command": "npx",
+                "args": ["-y", "mcp-server-fetch-typescript"],
+            },
+            "memory": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"],
+            },
+            "data": {
+                "command": "uvx",
+                "args": ["mcp-server-sqlite", "--db", str(_SANDBOX / "data" / "test.db")],
+            },
+            "reasoning": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            },
+        },
+        "top_k": 5,
+    }
 
 
 class FederatedOrchestrator:
@@ -64,39 +98,42 @@ class FederatedOrchestrator:
 
     async def run(self, workflow: dict) -> WorkflowMetrics:
         wf_name = workflow["name"]
-        metrics = WorkflowMetrics(workflow_name=wf_name, architecture_name="Federated MCP")
-        metrics.prompt_tokens += self._count_tokens(workflow["prompt"])
+        metrics = WorkflowMetrics(workflow_name=wf_name, architecture_name="Federated (smartmcp)")
 
-        selected_mcps, router_tokens_used = await classify_mcps(self.client, workflow["prompt"])
-        metrics.router_tokens = router_tokens_used
-        metrics.mcps_activated = len(selected_mcps)
+        config = _build_smartmcp_config()
+        config_path = Path(__file__).resolve().parent.parent / "smartmcp_config.json"
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
 
-        self.trace.record("router", "classification", {
-            "selected_mcps": selected_mcps,
-            "tokens": router_tokens_used,
-        })
+        process = await asyncio.create_subprocess_exec(
+            "smartmcp", "--config", str(config_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        connections = await connect_all_mcps(selected_mcps)
-        metrics.mcp_servers_connected = len(connections)
+        conn = MCPConnection(server_key="smartmcp", server_name="SmartMCP Router", process=process)
+        await conn.initialize()
+        await conn.list_tools()
 
-        all_tools = []
-        for key, conn in connections.items():
-            all_tools.extend(conn.tools)
-
-        metrics.tools_exposed = len(all_tools)
-        metrics.tool_schema_tokens = self._schema_tokens(all_tools)
+        metrics.mcp_servers_connected = 1
+        metrics.tools_exposed = len(conn.tools)
+        metrics.tool_schema_tokens = self._schema_tokens(conn.tools)
+        metrics.mcps_activated = 6
 
         orchestration_header = (
-            f"You are an AI assistant with access to the following domain MCPs: {', '.join(selected_mcps)}.\n"
+            "You are an AI assistant with access to tools via SmartMCP semantic router.\n"
+            "You do NOT have all tools pre-loaded. Instead, discover tools dynamically:\n\n"
+            "1. Call search_tools to find relevant tools for your task\n"
+            "2. Each result includes the target identifier and full input schema\n"
+            "3. Build arguments matching the schema, then call call_discovered_tool\n\n"
             "Call tools using:\n"
-            'TOOL_CALL: {"name": "<tool_name>", "arguments": {...}}\n'
-            "After all tool calls, output:\n"
-            "FINAL_ANSWER: <your complete answer>\n\n"
+            'TOOL_CALL: {"name": "<tool_name>", "arguments": {...}}\n\n'
             "Available tools:\n"
         )
         metrics.orchestration_prompt_tokens = self._count_tokens(orchestration_header)
 
-        system_prompt = orchestration_header + self._tool_schema_block(all_tools)
+        system_prompt = orchestration_header + self._tool_schema_block(conn.tools)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": workflow["prompt"]},
@@ -108,12 +145,14 @@ class FederatedOrchestrator:
 
         for turn in range(8):
             response = await self.client.chat(messages, temperature=0.1)
+            if response.error:
+                metrics.tools_truncated = -1
+                return metrics
             total_latency += response.latency_ms
             metrics.prompt_tokens += response.usage.prompt_tokens
             metrics.completion_tokens += response.usage.completion_tokens
             metrics.reasoning_tokens += response.usage.reasoning_tokens
             metrics.total_tokens += response.usage.total_tokens
-            metrics.completion_tokens += response.usage.completion_tokens
             metrics.agent_hops += 1
 
             content = response.content or ""
@@ -128,35 +167,29 @@ class FederatedOrchestrator:
                 for tc in tool_calls:
                     name = tc.get("name", "")
                     args = tc.get("arguments", {})
-                    found = False
-                    for key, conn in connections.items():
-                        for t in conn.tools:
-                            if t.name == name:
-                                result = await conn.call_tool(name, args)
-                                tools_used.add(name)
-                                real_calls += 1
-                                result_content = result.get("content", [{}])
-                                text = ""
-                                for c in result_content:
-                                    if isinstance(c, dict):
-                                        text += c.get("text", json.dumps(c))
-                                    else:
-                                        text += str(c)
-                                results.append({name: text})
-                                self.trace.record("tool_call", name, {
-                                    "mcp": key, "args": args, "result_preview": text[:200],
-                                })
-                                found = True
-                                break
-                        if found:
-                            break
-                    if not found:
+                    matched = [t for t in conn.tools if t.name == name]
+                    if matched:
+                        result = await conn.call_tool(name, args)
+                        tools_used.add(name)
+                        real_calls += 1
+                        result_content = result.get("content", [{}])
+                        text = ""
+                        for c in result_content:
+                            if isinstance(c, dict):
+                                text += c.get("text", json.dumps(c))
+                            else:
+                                text += str(c)
+                        results.append({name: text})
+                        self.trace.record("tool_call", name, {
+                            "mcp": "smartmcp", "args": args, "result_preview": text[:200],
+                        })
+                    else:
                         results.append({name: f"Error: tool '{name}' not found"})
 
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
-                    "content": f"Tool results:\n{json.dumps(results, indent=2)}\n\nContinue or provide FINAL_ANSWER.",
+                    "content": f"Tool execution results:\n{json.dumps(results, indent=2)}\n\nContinue or provide FINAL_ANSWER.",
                 })
             else:
                 messages.append({"role": "assistant", "content": content})
@@ -166,8 +199,15 @@ class FederatedOrchestrator:
         metrics.real_tool_calls = real_calls
         metrics.latency_ms = round(total_latency, 1)
 
-        self.logger.log_event(wf_name, "Federated MCP", "completed", metrics.snapshot())
+        self.logger.log_event(wf_name, "Federated (smartmcp)", "completed", metrics.snapshot())
         self.trace.flush(f"{_TRACE_DIR}/federated_{wf_name.replace(' ', '_')}.json")
 
-        await close_all(connections)
+        try:
+            await conn.close()
+        except Exception:
+            pass
+        try:
+            config_path.unlink()
+        except Exception:
+            pass
         return metrics

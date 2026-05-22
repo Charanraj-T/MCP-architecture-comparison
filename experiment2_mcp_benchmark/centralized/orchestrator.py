@@ -1,11 +1,45 @@
+import asyncio
 import json
+import subprocess
 import tiktoken
 from pathlib import Path
 from common import LMStudioClient
 from metrics import WorkflowMetrics, JSONLogger, TraceCollector
-from mcp_client import connect_all_mcps, close_all
+from mcp_client import MCPConnection
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
+_SANDBOX = Path(__file__).resolve().parent.parent / "sandbox"
+
+
+def _build_1mcp_config() -> dict:
+    return {
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", str(_SANDBOX)],
+            },
+            "git": {
+                "command": "uvx",
+                "args": ["mcp-server-git", "--repository", str(_SANDBOX / "repo")],
+            },
+            "fetch": {
+                "command": "npx",
+                "args": ["-y", "mcp-server-fetch-typescript"],
+            },
+            "memory": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"],
+            },
+            "data": {
+                "command": "uvx",
+                "args": ["mcp-server-sqlite", "--db", str(_SANDBOX / "data" / "test.db")],
+            },
+            "reasoning": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            },
+        }
+    }
 
 
 class CentralizedOrchestrator:
@@ -63,31 +97,43 @@ class CentralizedOrchestrator:
 
     async def run(self, workflow: dict) -> WorkflowMetrics:
         wf_name = workflow["name"]
-        metrics = WorkflowMetrics(workflow_name=wf_name, architecture_name="Centralized MCP")
-        metrics.prompt_tokens += self._count_tokens(workflow["prompt"])
+        metrics = WorkflowMetrics(workflow_name=wf_name, architecture_name="Centralized (1MCP)")
 
-        connections = await connect_all_mcps()
-        metrics.mcp_servers_connected = len(connections)
+        config = _build_1mcp_config()
+        config_path = Path(__file__).resolve().parent.parent / "1mcp_config.json"
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
 
-        all_tools = []
-        for key, conn in connections.items():
-            all_tools.extend(conn.tools)
+        process = await asyncio.create_subprocess_exec(
+            "npx", "-y", "@1mcp/agent", "serve",
+            "--config", str(config_path),
+            "--transport", "stdio",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        metrics.tools_exposed = len(all_tools)
-        metrics.tool_schema_tokens = self._schema_tokens(all_tools)
-        metrics.mcps_activated = len(connections)
+        conn = MCPConnection(server_key="1mcp", server_name="1MCP Aggregator", process=process)
+        await conn.initialize()
+        await conn.list_tools()
+
+        metrics.mcp_servers_connected = 1
+        metrics.tools_exposed = len(conn.tools)
+        metrics.tool_schema_tokens = self._schema_tokens(conn.tools)
+        metrics.mcps_activated = 6
 
         orchestration_header = (
-            "You are an AI assistant with access to the following real tools across multiple MCP servers.\n"
+            "You are an AI assistant with access to tools aggregated via 1MCP.\n"
+            "Tools are namespaced as {server}_1mcp_{tool_name} (e.g., filesystem_1mcp_read_file).\n"
             "Call tools using:\n"
-            'TOOL_CALL: {"name": "<tool_name>", "arguments": {...}}\n'
+            'TOOL_CALL: {"name": "<full_tool_name>", "arguments": {...}}\n'
             "After all tool calls, output:\n"
             "FINAL_ANSWER: <your complete answer>\n\n"
             "Available tools:\n"
         )
         metrics.orchestration_prompt_tokens = self._count_tokens(orchestration_header)
 
-        system_prompt = orchestration_header + self._tool_schema_block(all_tools)
+        system_prompt = orchestration_header + self._tool_schema_block(conn.tools)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": workflow["prompt"]},
@@ -99,12 +145,14 @@ class CentralizedOrchestrator:
 
         for turn in range(8):
             response = await self.client.chat(messages, temperature=0.1)
+            if response.error:
+                metrics.tools_truncated = -1
+                return metrics
             total_latency += response.latency_ms
             metrics.prompt_tokens += response.usage.prompt_tokens
             metrics.completion_tokens += response.usage.completion_tokens
             metrics.reasoning_tokens += response.usage.reasoning_tokens
             metrics.total_tokens += response.usage.total_tokens
-            metrics.completion_tokens += response.usage.completion_tokens
             metrics.agent_hops += 1
 
             content = response.content or ""
@@ -119,30 +167,24 @@ class CentralizedOrchestrator:
                 for tc in tool_calls:
                     name = tc.get("name", "")
                     args = tc.get("arguments", {})
-                    found = False
-                    for key, conn in connections.items():
-                        for t in conn.tools:
-                            if t.name == name:
-                                result = await conn.call_tool(name, args)
-                                tools_used.add(name)
-                                real_calls += 1
-                                result_content = result.get("content", [{}])
-                                text = ""
-                                for c in result_content:
-                                    if isinstance(c, dict):
-                                        text += c.get("text", json.dumps(c))
-                                    else:
-                                        text += str(c)
-                                results.append({name: text})
-                                self.trace.record("tool_call", name, {
-                                    "mcp": key, "args": args, "result_preview": text[:200],
-                                })
-                                found = True
-                                break
-                        if found:
-                            break
-                    if not found:
-                        results.append({name: f"Error: tool '{name}' not found on any MCP server"})
+                    matched = [t for t in conn.tools if t.name == name]
+                    if matched:
+                        result = await conn.call_tool(name, args)
+                        tools_used.add(name)
+                        real_calls += 1
+                        result_content = result.get("content", [{}])
+                        text = ""
+                        for c in result_content:
+                            if isinstance(c, dict):
+                                text += c.get("text", json.dumps(c))
+                            else:
+                                text += str(c)
+                        results.append({name: text})
+                        self.trace.record("tool_call", name, {
+                            "mcp": "1mcp", "args": args, "result_preview": text[:200],
+                        })
+                    else:
+                        results.append({name: f"Error: tool '{name}' not found"})
 
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
@@ -157,8 +199,15 @@ class CentralizedOrchestrator:
         metrics.real_tool_calls = real_calls
         metrics.latency_ms = round(total_latency, 1)
 
-        self.logger.log_event(wf_name, "Centralized MCP", "completed", metrics.snapshot())
+        self.logger.log_event(wf_name, "Centralized (1MCP)", "completed", metrics.snapshot())
         self.trace.flush(f"{_TRACE_DIR}/centralized_{wf_name.replace(' ', '_')}.json")
 
-        await close_all(connections)
+        try:
+            await conn.close()
+        except Exception:
+            pass
+        try:
+            config_path.unlink()
+        except Exception:
+            pass
         return metrics

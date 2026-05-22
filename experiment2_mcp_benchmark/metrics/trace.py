@@ -2,6 +2,7 @@ import json
 import datetime
 from pathlib import Path
 
+
 class TraceCollector:
     def __init__(self):
         self.events: list[dict] = []

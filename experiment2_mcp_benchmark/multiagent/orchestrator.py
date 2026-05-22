@@ -35,6 +35,8 @@ class MultiAgentOrchestrator:
             [{"role": "user", "content": DECOMPOSE_PROMPT + user_prompt}],
             temperature=0.1, max_tokens=512,
         )
+        if response.error:
+            return [{"agent": "dev_agent", "task": user_prompt}], response
         content = response.content or ""
         try:
             match = re.search(r"\[.*?\]", content, re.DOTALL)
@@ -49,19 +51,15 @@ class MultiAgentOrchestrator:
     async def run(self, workflow: dict) -> WorkflowMetrics:
         wf_name = workflow["name"]
         metrics = WorkflowMetrics(workflow_name=wf_name, architecture_name="Multi-Agent")
-        metrics.prompt_tokens = self._count_tokens(workflow["prompt"])
-
-        decompose_tokens = self._count_tokens(DECOMPOSE_PROMPT)
-        metrics.prompt_tokens += decompose_tokens
 
         subtasks, decompose_resp = await self._decompose(workflow["prompt"])
         metrics.prompt_tokens += decompose_resp.usage.prompt_tokens
         metrics.completion_tokens += decompose_resp.usage.completion_tokens
         metrics.reasoning_tokens += decompose_resp.usage.reasoning_tokens
         metrics.total_tokens += decompose_resp.usage.total_tokens
+        metrics.latency_ms += decompose_resp.latency_ms
         metrics.agent_hops += 1
 
-        worker_results = []
         active_agents = set()
 
         async def run_worker(st: dict):
@@ -71,7 +69,6 @@ class MultiAgentOrchestrator:
             worker_class = AGENT_MAP[agent]
             worker = worker_class(self.client)
             result = await worker.run(task)
-            metrics.mcps_activated += 1
             return result
 
         worker_results = await asyncio.gather(*[run_worker(st) for st in subtasks], return_exceptions=True)
@@ -82,10 +79,12 @@ class MultiAgentOrchestrator:
                 continue
             metrics.prompt_tokens += result["usage"]["prompt_tokens"]
             metrics.completion_tokens += result["usage"]["completion_tokens"]
+            metrics.reasoning_tokens += result["usage"]["reasoning_tokens"]
             metrics.total_tokens += result["usage"]["total_tokens"]
             metrics.latency_ms += result["usage"]["latency_ms"]
             metrics.agent_hops += result["usage"]["hops"]
             metrics.real_tool_calls += result["usage"]["tool_calls"]
+            metrics.mcps_activated += result.get("mcps_activated", 0)
             all_tools_used.update(result.get("tools_used", []))
 
         metrics.tools_used = len(all_tools_used)
@@ -106,6 +105,9 @@ class MultiAgentOrchestrator:
             [{"role": "user", "content": compile_prompt}],
             temperature=0.3, max_tokens=1024,
         )
+        if compile_resp.error:
+            metrics.latency_ms = round(metrics.latency_ms, 1)
+            return metrics
         metrics.prompt_tokens += compile_resp.usage.prompt_tokens
         metrics.completion_tokens += compile_resp.usage.completion_tokens
         metrics.reasoning_tokens += compile_resp.usage.reasoning_tokens

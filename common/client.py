@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 
 
 MODEL_CONTEXT_LIMITS: dict[str, int] = {
-    "qwen/qwen3-8b": 40960,
-    "llama-3.1-70b-versatile": 128000,
-    "llama-3.1-8b-instant": 128000,
+    "qwen/qwen3-8b": 32768,
+    "llama-3.3-70b-versatile": 131072,
+    "llama-3.1-8b-instant": 131072,
 }
 
 
@@ -25,6 +25,7 @@ class LLMResponse:
     usage: TokenUsage
     latency_ms: float = 0.0
     raw: dict = field(default_factory=dict)
+    error: str = ""
 
 
 class LMStudioClient:
@@ -72,13 +73,18 @@ class LMStudioClient:
         await self._ensure_client()
         messages = self._inject_no_think(messages)
         start = time.monotonic()
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            **kwargs,
-        )
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+        except Exception as e:
+            elapsed = (time.monotonic() - start) * 1000
+            err_msg = f"{type(e).__name__}: {e}"
+            return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error=err_msg)
         elapsed = (time.monotonic() - start) * 1000
         usage = response.usage
         reasoning = 0
@@ -105,14 +111,14 @@ def select_provider():
     console = Console()
     console.print("[bold]Select provider:[/bold]")
     console.print("  [L] Local LM Studio (qwen/qwen3-8b, 40k context)")
-    console.print("  [G] Groq API (llama-3.1-70b-versatile, 128k context)")
+    console.print("  [G] Groq API (llama-3.3-70b-versatile, 131k context)")
     choice = input("Choice [L/G]: ").strip().lower()
     if choice == "g":
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
             console.print("[red]Error: GROQ_API_KEY not set in environment[/red]")
             sys.exit(1)
-        model = os.environ.get("GROQ_MODEL", "llama-3.1-70b-versatile")
+        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
         client = LMStudioClient(
             base_url="https://api.groq.com/openai/v1",
             model=model,
@@ -126,6 +132,6 @@ def select_provider():
     return client, "qwen/qwen3-8b"
 
 
-def get_token_budget(model_name: str, safety_margin: int = 2000) -> int:
+def get_token_budget(model_name: str, safety_margin: int = 4000) -> int:
     limit = MODEL_CONTEXT_LIMITS.get(model_name, 40960)
     return limit - safety_margin

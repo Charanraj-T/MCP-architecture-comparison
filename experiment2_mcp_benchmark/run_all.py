@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
 from rich import box
 
 console = Console(record=True)
@@ -71,9 +70,10 @@ def print_metrics(metrics):
 
 
 async def main():
-    separator("EXPERIMENT 2: REAL MCP ORCHESTRATION")
+    separator("EXPERIMENT 2: REAL MCP ORCHESTRATION BENCHMARK")
 
-    console.print("[bold]MCP Servers:[/bold] dev (filesystem+git), docs (fetch+memory), data (SQLite), reasoning (planning)")
+    console.print("[bold]MCP Servers:[/bold] filesystem (npx), git (uvx), fetch (npx), memory (npx), SQLite (uvx), sequential-thinking (npx)")
+    console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]smartmcp[/blue] router), Multi-Agent (direct)")
     console.print()
 
     client, _model_name = select_provider()
@@ -89,8 +89,8 @@ async def main():
     all_metrics = TokenTracker()
 
     architectures = [
-        ("Centralized MCP", CentralizedOrchestrator),
-        ("Federated MCP", FederatedOrchestrator),
+        ("Centralized (1MCP)", CentralizedOrchestrator),
+        ("Federated (smartmcp)", FederatedOrchestrator),
         ("Multi-Agent", MultiAgentOrchestrator),
     ]
 
@@ -110,20 +110,7 @@ async def main():
                 traceback.print_exc()
 
     separator("FINAL COMPARISON")
-    all_metrics.print_comparison()
-
-    console.print()
-    console.print(Panel.fit(
-        "[bold cyan]Expected Findings[/bold cyan]\n\n"
-        "• [yellow]Centralized MCP[/yellow]: All schemas injected = highest token cost,\n"
-        "  simplest orchestration, real tool execution overhead\n\n"
-        "• [green]Federated MCP[/green]: Semantic router filters schemas,\n"
-        "  best token efficiency, real MCP selection\n\n"
-        "• [red]Multi-Agent[/red]: Parallel isolated workers,\n"
-        "  highest total tokens (duplicated context), best isolation,\n"
-        "  real concurrent MCP connections",
-        border_style="cyan",
-    ))
+    all_metrics.print_comparison(console)
 
     os.makedirs("results", exist_ok=True)
     results = all_metrics.get_results()
@@ -140,6 +127,7 @@ async def main():
     console.print("[dim]See traces/ directory for detailed JSON trace logs.[/dim]")
     console.print()
     console.print("[bold green]Done![/bold green]")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

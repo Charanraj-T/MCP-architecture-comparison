@@ -22,8 +22,6 @@ from multiagent.run import MultiAgentOrchestrator
 
 from workflows import WORKFLOWS
 
-MCP_COUNTS = [10, 20, 50, 100]
-
 ARCHITECTURES = [
     ("Centralized MCP", CentralizedOrchestrator),
     ("Federated MCP", FederatedOrchestrator),
@@ -89,6 +87,32 @@ def print_scalability_table(all_metrics: list, mcp_count: int):
     console.print(table)
 
 
+def select_mcp_counts():
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        try:
+            counts = [int(x) for x in _sys.argv[1].split(",")]
+            counts = [c for c in counts if c > 0]
+            if counts:
+                return sorted(counts)
+        except ValueError:
+            pass
+    console.print("[bold]Select MCP counts to test:[/bold]")
+    console.print("  Default: 10, 20, 50, 100")
+    raw = input("MCP counts (comma-separated, Enter for all): ").strip()
+    if not raw:
+        return [10, 20, 50, 100]
+    try:
+        counts = [int(x.strip()) for x in raw.split(",")]
+        counts = [c for c in counts if c > 0]
+        if not counts:
+            raise ValueError
+        return sorted(counts)
+    except ValueError:
+        console.print("[red]Invalid input, using defaults: 10, 20, 50, 100[/red]")
+        return [10, 20, 50, 100]
+
+
 async def main():
     separator("MCP SCALABILITY COMPARISON")
 
@@ -101,9 +125,12 @@ async def main():
         console.print(f"[red]  Cannot connect: {e}[/red]")
         sys.exit(1)
 
+    mcp_counts = select_mcp_counts()
+    console.print(f"  [dim]Testing: {mcp_counts}[/dim]\n")
+
     tracker = TokenTracker()
 
-    for mcp_count in MCP_COUNTS:
+    for mcp_count in mcp_counts:
         separator(f"MCP COUNT: {mcp_count}")
 
         mcps = generate_mcps(mcp_count)
@@ -143,7 +170,7 @@ async def main():
                     )
 
     separator("SCALABILITY COMPARISON TABLE")
-    for mcp_count in MCP_COUNTS:
+    for mcp_count in mcp_counts:
         print_scalability_table(tracker.metrics, mcp_count)
 
     os.makedirs("results", exist_ok=True)

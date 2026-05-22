@@ -1,7 +1,7 @@
 DECOMPOSE_PROMPT = (
     "You are a supervisor AI. Break the following task into subtasks "
     "for specialized worker agents. Available agents:\n"
-    "- dev_agent: File system ops, git ops, code search\n"
+    "- dev_agent: File system ops, git ops, create/read/write files\n"
     "- docs_agent: URL fetching, memory storage/recall\n"
     "- data_agent: SQLite database queries, schema inspection\n"
     "- planning_agent: Structured reasoning, task decomposition, summarization\n\n"

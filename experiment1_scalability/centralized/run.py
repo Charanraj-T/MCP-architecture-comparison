@@ -67,6 +67,10 @@ class CentralizedOrchestrator:
 
         for turn in range(6):
             response = await self.client.chat(messages, temperature=0.1)
+            if response.error:
+                metrics.tools_truncated = -1
+                warnings.warn(f"Centralized MCP SKIPPED for {workflow['name']}: model crashed ({response.error})", ResourceWarning)
+                return metrics
             total_latency += response.latency_ms
             metrics.prompt_tokens += response.usage.prompt_tokens
             metrics.completion_tokens += response.usage.completion_tokens

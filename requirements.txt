@@ -4,3 +4,4 @@ rich>=15.0
 tiktoken>=0.13
 httpx>=0.28
 aiosqlite>=0.22
+smartmcp-router>=0.3

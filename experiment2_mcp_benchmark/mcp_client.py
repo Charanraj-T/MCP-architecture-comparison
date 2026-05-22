@@ -1,31 +1,67 @@
 import asyncio
 import json
+import os
 import subprocess
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 
-MCP_DEFINITIONS = {
-    "dev": {
-        "path": str(Path(__file__).resolve().parent / "mcps" / "dev_mcp" / "server.py"),
-        "name": "Dev MCP",
-        "description": "File system and git operations",
-    },
-    "docs": {
-        "path": str(Path(__file__).resolve().parent / "mcps" / "docs_mcp" / "server.py"),
-        "name": "Docs MCP",
-        "description": "URL fetching and memory store",
-    },
-    "data": {
-        "path": str(Path(__file__).resolve().parent / "mcps" / "data_mcp" / "server.py"),
-        "name": "Data MCP",
-        "description": "SQLite database queries",
-    },
-    "reasoning": {
-        "path": str(Path(__file__).resolve().parent / "mcps" / "reasoning_mcp" / "server.py"),
-        "name": "Reasoning MCP",
-        "description": "Structured reasoning and summarization",
-    },
+_SANDBOX = Path(__file__).resolve().parent / "sandbox"
+
+
+@dataclass
+class MCPServerDef:
+    key: str
+    name: str
+    description: str
+    command: str
+    args: list[str]
+
+
+MCP_DEFINITIONS: dict[str, MCPServerDef] = {
+    "filesystem": MCPServerDef(
+        key="filesystem",
+        name="Filesystem MCP",
+        description="File system operations (read, write, search, list)",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-filesystem", str(_SANDBOX)],
+    ),
+    "git": MCPServerDef(
+        key="git",
+        name="Git MCP",
+        description="Git operations (log, diff, status, blame)",
+        command="uvx",
+        args=["mcp-server-git", "--repository", str(_SANDBOX / "repo")],
+    ),
+    "fetch": MCPServerDef(
+        key="fetch",
+        name="Fetch MCP",
+        description="URL fetching and web content retrieval",
+        command="npx",
+        args=["-y", "mcp-server-fetch-typescript"],
+    ),
+    "memory": MCPServerDef(
+        key="memory",
+        name="Memory MCP",
+        description="Key-value memory storage and retrieval",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-memory"],
+    ),
+    "data": MCPServerDef(
+        key="data",
+        name="Data MCP",
+        description="SQLite database queries, schema inspection, data analysis",
+        command="uvx",
+        args=["mcp-server-sqlite", "--db", str(_SANDBOX / "data" / "test.db")],
+    ),
+    "reasoning": MCPServerDef(
+        key="reasoning",
+        name="Reasoning MCP",
+        description="Sequential thinking, structured reasoning, step-by-step analysis",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-sequential-thinking"],
+    ),
 }
+
 
 @dataclass
 class MCPTool:
@@ -71,7 +107,7 @@ class MCPConnection:
         result = await self._request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "experiment2", "version": "1.0"},
+            "clientInfo": {"name": "mcp-benchmark", "version": "1.0"},
         })
         notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
         self.process.stdin.write(notif.encode())
@@ -105,29 +141,28 @@ class MCPConnection:
                 pass
 
 
-async def connect_mcp(server_key: str) -> MCPConnection:
+async def connect_mcp(server_key: str, env: dict = None) -> MCPConnection:
     definition = MCP_DEFINITIONS[server_key]
-    server_path = definition["path"]
-    venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python3"
-    python_exe = str(venv_python) if venv_python.exists() else "python3"
+    merged_env = {**os.environ, **(env or {})}
 
     process = await asyncio.create_subprocess_exec(
-        python_exe, server_path,
+        definition.command, *definition.args,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=merged_env,
     )
 
-    conn = MCPConnection(server_key=server_key, server_name=definition["name"], process=process)
+    conn = MCPConnection(server_key=server_key, server_name=definition.name, process=process)
     await conn.initialize()
     await conn.list_tools()
     return conn
 
 
-async def connect_all_mcps(keys: list[str] = None) -> dict[str, MCPConnection]:
+async def connect_all_mcps(keys: list[str] = None, env: dict = None) -> dict[str, MCPConnection]:
     if keys is None:
         keys = list(MCP_DEFINITIONS.keys())
-    tasks = {k: connect_mcp(k) for k in keys}
+    tasks = {k: connect_mcp(k, env=env) for k in keys}
     results = {}
     for k, task in tasks.items():
         try:

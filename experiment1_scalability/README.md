@@ -1,4 +1,4 @@
-# Experiment 2: Scalability
+# Experiment 1: Scalability
 
 Tests how each architecture scales as the number of MCPs grows: **10, 20, 50, 100**. MCPs are simulated via a factory that generates N evenly distributed across 10 domains.
 

@@ -62,6 +62,10 @@ class FederatedOrchestrator:
         )
 
         router_response = await self.client.chat([{"role": "user", "content": router_prompt}], temperature=0.1)
+        if router_response.error:
+            metrics.tools_truncated = -1
+            warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: router crashed ({router_response.error})", ResourceWarning)
+            return metrics
         metrics.prompt_tokens += router_response.usage.prompt_tokens
         metrics.completion_tokens += router_response.usage.completion_tokens
         metrics.reasoning_tokens += router_response.usage.reasoning_tokens
@@ -110,6 +114,10 @@ class FederatedOrchestrator:
 
         for turn in range(6):
             response = await self.client.chat(messages, temperature=0.1)
+            if response.error:
+                metrics.tools_truncated = -1
+                warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: model crashed ({response.error})", ResourceWarning)
+                return metrics
             total_latency += response.latency_ms
             metrics.prompt_tokens += response.usage.prompt_tokens
             metrics.completion_tokens += response.usage.completion_tokens

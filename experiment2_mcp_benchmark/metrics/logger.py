@@ -2,6 +2,7 @@ import json
 import datetime
 from pathlib import Path
 
+
 class JSONLogger:
     def __init__(self, trace_dir: str = "traces"):
         self.trace_dir = Path(trace_dir)

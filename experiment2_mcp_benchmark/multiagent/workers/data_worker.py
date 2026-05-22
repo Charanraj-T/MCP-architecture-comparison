@@ -4,7 +4,7 @@ from common import LMStudioClient
 from mcp_client import connect_all_mcps, close_all
 
 
-class DocsWorker:
+class DataWorker:
     def __init__(self, client: LMStudioClient):
         self.client = client
 
@@ -49,8 +49,9 @@ class DocsWorker:
         return calls
 
     async def run(self, task: str) -> dict:
-        connections = await connect_all_mcps(["docs"])
-        usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "hops": 0, "tool_calls": 0}
+        connections = await connect_all_mcps(["data"])
+        mcps_count = len(connections)
+        usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "hops": 0, "tool_calls": 0}
         tools_used = set()
 
         all_tools = []
@@ -58,7 +59,7 @@ class DocsWorker:
             all_tools.extend(conn.tools)
 
         system = (
-            "You are a Docs Agent specializing in documentation retrieval and memory management.\n"
+            "You are a Data Agent specializing in database queries and analysis.\n"
             'Call tools: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
             "After all calls: FINAL_ANSWER: <answer>\n\n"
             "Available tools:\n" + self._tool_schema_block(all_tools)
@@ -71,8 +72,12 @@ class DocsWorker:
 
         for turn in range(6):
             resp = await self.client.chat(messages, temperature=0.1)
+            if resp.error:
+                await close_all(connections)
+                return {"agent": "data_agent", "answer": "", "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count}
             usage_data["prompt_tokens"] += resp.usage.prompt_tokens
             usage_data["completion_tokens"] += resp.usage.completion_tokens
+            usage_data["reasoning_tokens"] += resp.usage.reasoning_tokens
             usage_data["total_tokens"] += resp.usage.total_tokens
             usage_data["latency_ms"] += resp.latency_ms
             usage_data["hops"] += 1
@@ -106,7 +111,7 @@ class DocsWorker:
                 match = re.search(r'FINAL_ANSWER:\s*(.*)', content, re.DOTALL)
                 answer = match.group(1).strip() if match else content
                 await close_all(connections)
-                return {"agent": "docs_agent", "answer": answer, "usage": usage_data, "tools_used": list(tools_used)}
+                return {"agent": "data_agent", "answer": answer, "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count}
 
         await close_all(connections)
-        return {"agent": "docs_agent", "answer": content, "usage": usage_data, "tools_used": list(tools_used)}
+        return {"agent": "data_agent", "answer": content, "usage": usage_data, "tools_used": list(tools_used), "mcps_activated": mcps_count}
