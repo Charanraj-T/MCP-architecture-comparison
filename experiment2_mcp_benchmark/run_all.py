@@ -21,6 +21,8 @@ from metrics import TokenTracker
 from centralized.orchestrator import CentralizedOrchestrator
 from federated.orchestrator import FederatedOrchestrator
 from multiagent.orchestrator import MultiAgentOrchestrator
+from mediator.orchestrator import MediatorOrchestrator
+from intent_driven.orchestrator import IntentDrivenOrchestrator
 from workflows import WORKFLOWS
 
 
@@ -73,7 +75,7 @@ async def main():
     separator("EXPERIMENT 2: REAL MCP ORCHESTRATION BENCHMARK")
 
     console.print("[bold]MCP Servers:[/bold] filesystem (npx), git (uvx), fetch (npx), memory (npx), SQLite (uvx), sequential-thinking (npx)")
-    console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]Bifrost[/blue] Code Mode), Multi-Agent (direct)")
+    console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]Bifrost[/blue] Code Mode), Multi-Agent (direct), MCP Mediator, Intent-Driven")
     console.print()
 
     client, _model_name = select_provider()
@@ -95,6 +97,8 @@ async def main():
         ("Federated (Bifrost)", FederatedOrchestrator),
         ("Centralized (1MCP)", CentralizedOrchestrator),
         ("Multi-Agent", MultiAgentOrchestrator),
+        ("MCP Mediator", MediatorOrchestrator),
+        ("Intent-Driven", IntentDrivenOrchestrator),
     ]
 
     for name, ArchClass in architectures:

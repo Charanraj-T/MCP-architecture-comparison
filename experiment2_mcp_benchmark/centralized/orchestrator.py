@@ -214,6 +214,11 @@ class CentralizedOrchestrator:
             metrics.tools_used = len(tools_used)
             metrics.real_tool_calls = real_calls
             metrics.latency_ms = round(total_latency, 1)
+            metrics.explanation = (
+                "All 6 MCP servers aggregated behind @1mcp/agent proxy. "
+                "All 46 tool schemas injected into a single LLM prompt. "
+                "Simple but schema overhead grows linearly with each additional server."
+            )
 
             self.logger.log_event(wf_name, "Centralized (1MCP)", "completed", metrics.snapshot())
             self.trace.flush(f"{_TRACE_DIR}/centralized_{wf_name.replace(' ', '_')}.json")

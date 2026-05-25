@@ -17,7 +17,7 @@ class ToolRegistry:
     def all_tools(self):
         return list(self._tools)
 
-    def get_tool(self, name: str) -> dict | None:
+    def get_tool(self, name: str):
         return self._tools_by_name.get(name)
 
     def get_tool_names(self) -> list[str]:

@@ -25,6 +25,7 @@ class WorkflowMetrics:
     real_tool_calls: int = 0
 
     latency_ms: float = 0.0
+    explanation: str = ""
 
     def snapshot(self) -> dict:
         return {
@@ -46,6 +47,7 @@ class WorkflowMetrics:
             "mcp_servers_connected": self.mcp_servers_connected,
             "real_tool_calls": self.real_tool_calls,
             "latency_ms": round(self.latency_ms, 1),
+            "explanation": self.explanation,
         }
 
 

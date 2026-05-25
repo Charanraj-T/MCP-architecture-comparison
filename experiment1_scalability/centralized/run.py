@@ -144,6 +144,11 @@ class CentralizedOrchestrator:
 
         metrics.tools_used = len(tools_used)
         metrics.latency_ms = round(total_latency, 1)
+        metrics.explanation = (
+            "All available MCP tools injected into system prompt at once. "
+            "Each LLM call pays the full schema cost. Simple but does not scale — "
+            "at larger MCP counts, schema tokens exceed context budget and execution is SKIPPED."
+        )
 
         self.logger.log_event(workflow["name"], "Centralized MCP", "done", metrics.snapshot())
         return metrics

@@ -195,6 +195,11 @@ class FederatedOrchestrator:
 
         metrics.tools_used = len(tools_used)
         metrics.latency_ms = round(total_latency, 1)
+        metrics.explanation = (
+            "Router LLM call first filters to relevant domains, injecting only their tools. "
+            "Extra hop for routing but schema tokens are 20-80% lower than Centralized. "
+            "Scales well at moderate MCP counts but adds latency from the routing step."
+        )
 
         self.logger.log_event(workflow["name"], "Federated MCP", "done", metrics.snapshot())
         return metrics

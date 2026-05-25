@@ -29,6 +29,7 @@ class WorkflowMetrics:
     mcps_activated: int = 0
 
     latency_ms: float = 0.0
+    explanation: str = ""
 
     def snapshot(self) -> dict:
         return {
@@ -46,4 +47,5 @@ class WorkflowMetrics:
             "mcps_total": self.mcps_total,
             "mcps_activated": self.mcps_activated,
             "latency_ms": round(self.latency_ms, 1),
+            "explanation": self.explanation,
         }

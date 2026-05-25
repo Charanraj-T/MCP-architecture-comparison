@@ -205,6 +205,12 @@ class MultiAgentOrchestrator:
 
         total_latency = decompose_usage["latency_ms"] + sum(u["latency_ms"] for _, _, _, u, _ in worker_results) + final_resp.latency_ms
         metrics.latency_ms = round(total_latency, 1)
+        metrics.explanation = (
+            "Supervisor agent decomposes the task, then parallel domain workers each run independently "
+            "with their own tool subset and LLM loop. A final compile hop merges results. "
+            "Highest token count and latency due to 25-47 agent hops. "
+            "Parallel execution helps but each worker's LLM loop dominates."
+        )
 
         self.logger.log_event(workflow["name"], "Multi-Agent", "done", metrics.snapshot())
         return metrics

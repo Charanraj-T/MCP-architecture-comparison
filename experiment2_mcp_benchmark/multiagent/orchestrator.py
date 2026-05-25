@@ -150,6 +150,12 @@ class MultiAgentOrchestrator:
         metrics.agent_hops += 1
 
         metrics.latency_ms = round(metrics.latency_ms, 1)
+        metrics.explanation = (
+            "Supervisor LLM decomposes the task into subtasks. "
+            "Parallel specialist workers (dev, docs, data, planning) each connect to their own MCP servers. "
+            "Inter-agent serialization adds overhead but enables domain isolation. "
+            "Compile hop merges all worker outputs into final answer."
+        )
 
         self.trace.record("done", "completed", metrics.snapshot())
         self.trace.flush(f"{_TRACE_DIR}/multiagent_{wf_name.replace(' ', '_')}.json")

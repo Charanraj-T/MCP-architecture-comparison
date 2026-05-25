@@ -219,6 +219,12 @@ class FederatedOrchestrator:
         metrics.tools_used = len(tools_used)
         metrics.real_tool_calls = real_calls
         metrics.latency_ms = round(total_latency, 1)
+        metrics.explanation = (
+            "All servers behind Bifrost AI gateway with Code Mode. "
+            "Only 4 meta-tools exposed to LLM — tool discovery happens on demand via Starlark code. "
+            "Multiple MCP calls batched inside single executeToolCode call. "
+            "Heavy gateway overhead but ~50% token reduction vs Centralized."
+        )
 
         self.logger.log_event(wf_name, "Federated (Bifrost)", "completed", metrics.snapshot())
         self.trace.flush(f"{_TRACE_DIR}/federated_{wf_name.replace(' ', '_')}.json")

@@ -1,3 +1,3 @@
-from .client import LMStudioClient, select_provider, get_token_budget
+from .client import LMStudioClient, OpenAIClient, select_provider, get_token_budget, TokenUsage, LLMResponse, MODEL_CONTEXT_LIMITS
 
-__all__ = ["LMStudioClient", "select_provider", "get_token_budget"]
+__all__ = ["LMStudioClient", "OpenAIClient", "select_provider", "get_token_budget", "TokenUsage", "LLMResponse", "MODEL_CONTEXT_LIMITS"]

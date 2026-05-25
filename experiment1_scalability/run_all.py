@@ -19,6 +19,8 @@ from metrics import TokenTracker
 from centralized.run import CentralizedOrchestrator
 from federated.run import FederatedOrchestrator
 from multiagent.run import MultiAgentOrchestrator
+from mediator.run import MediatorOrchestrator
+from intent_driven.run import IntentDrivenOrchestrator
 
 from workflows import WORKFLOWS
 
@@ -26,6 +28,8 @@ ARCHITECTURES = [
     ("Centralized MCP", CentralizedOrchestrator),
     ("Federated MCP", FederatedOrchestrator),
     ("Multi-Agent", MultiAgentOrchestrator),
+    ("MCP Mediator", MediatorOrchestrator),
+    ("Intent-Driven", IntentDrivenOrchestrator),
 ]
 
 
