@@ -18,14 +18,11 @@ from metrics import TokenTracker
 
 from centralized.run import CentralizedOrchestrator
 from federated.run import FederatedOrchestrator
-from multiagent.run import MultiAgentOrchestrator
-
 from workflows import WORKFLOWS
 
 ARCHITECTURES = [
     ("Centralized MCP", CentralizedOrchestrator),
     ("Federated MCP", FederatedOrchestrator),
-    ("Multi-Agent", MultiAgentOrchestrator),
 ]
 
 

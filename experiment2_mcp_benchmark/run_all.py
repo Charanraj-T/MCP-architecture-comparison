@@ -20,7 +20,6 @@ from metrics import TokenTracker
 
 from centralized.orchestrator import CentralizedOrchestrator
 from federated.orchestrator import FederatedOrchestrator
-from multiagent.orchestrator import MultiAgentOrchestrator
 from workflows import WORKFLOWS
 
 
@@ -94,7 +93,6 @@ async def main():
     architectures = [
         ("Federated (Bifrost)", FederatedOrchestrator),
         ("Centralized (1MCP)", CentralizedOrchestrator),
-        ("Multi-Agent", MultiAgentOrchestrator),
     ]
 
     for name, ArchClass in architectures:

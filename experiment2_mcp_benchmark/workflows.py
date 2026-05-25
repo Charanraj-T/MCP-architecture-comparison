@@ -14,13 +14,6 @@ WORKFLOWS = [
         ),
     },
     {
-        "name": "Data Analysis",
-        "prompt": (
-            "Show me all users and their orders from the database. "
-            "Include the total amount spent per user."
-        ),
-    },
-    {
         "name": "Reasoning Task",
         "prompt": (
             "Think through this problem step by step: "

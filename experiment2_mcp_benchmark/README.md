@@ -38,9 +38,8 @@ All servers auto-download on first run via `npx -y` / `uvx`. Nothing installed g
 
 1. **File Operations** — list dirs, read files, git log
 2. **Web Research** — fetch URL, save to memory
-3. **Data Analysis** — SQL queries, user orders, aggregation
-4. **Reasoning Task** — step-by-step problem solving
-5. **Multi-Step Task** — file create + DB query + calculation
+3. **Reasoning Task** — step-by-step problem solving
+4. **Multi-Step Task** — file create + DB query + calculation
 
 ## Sandbox Test Data
 
