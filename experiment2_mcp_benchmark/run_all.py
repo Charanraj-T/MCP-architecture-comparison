@@ -3,6 +3,7 @@ import asyncio
 import sys
 import os
 import json
+import traceback
 from datetime import datetime
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,6 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rich.console import Console
 from rich.table import Table
 from rich import box
+from rich.panel import Panel
+from rich.text import Text
 
 console = Console(record=True)
 
@@ -22,6 +25,39 @@ from centralized.orchestrator import CentralizedOrchestrator
 from federated.orchestrator import FederatedOrchestrator
 from workflows import WORKFLOWS
 
+MCP_SERVERS = [
+    ("filesystem", "npx", "@modelcontextprotocol/server-filesystem", "File read/write/search"),
+    ("git", "uvx", "mcp-server-git", "Git log/diff/status"),
+    ("fetch", "npx", "mcp-server-fetch-typescript", "HTTP fetch"),
+    ("memory", "npx", "@modelcontextprotocol/server-memory", "Key-value store"),
+    ("SQLite", "uvx", "mcp-server-sqlite", "SQL queries"),
+    ("sequential-thinking", "npx", "@modelcontextprotocol/server-sequential-thinking", "Step-by-step reasoning"),
+]
+
+ARCHITECTURES = [
+    ("Centralized (1MCP)", CentralizedOrchestrator, "All 6 servers behind @1mcp/agent aggregator — all tools in system prompt"),
+    ("Federated (Bifrost)", FederatedOrchestrator, "All 6 servers behind Bifrost gateway — 4 meta-tools, on-demand discovery"),
+]
+
+COMPARISON_METRICS = [
+    ("total_tokens", "Total Tokens"),
+    ("prompt_tokens", "Input Tokens"),
+    ("completion_tokens", "Output Tokens"),
+    ("reasoning_tokens", "Reasoning Tokens"),
+    ("tool_schema_tokens", "Tool Schema Tokens"),
+    ("orchestration_prompt_tokens", "Orchestration Tokens"),
+    ("router_tokens", "Router Tokens"),
+    ("inter_agent_tokens", "Inter-Agent Tokens"),
+    ("tools_exposed", "Tools Exposed"),
+    ("tools_used", "Tools Used"),
+    ("real_tool_calls", "Real Tool Calls"),
+    ("agent_hops", "Agent Hops"),
+    ("mcps_activated", "MCPs Activated"),
+    ("mcp_servers_connected", "MCP Connections"),
+    ("tools_truncated", "Tools Truncated"),
+    ("latency_ms", "Latency (ms)"),
+]
+
 
 def separator(title: str):
     console.print()
@@ -31,51 +67,66 @@ def separator(title: str):
     console.print()
 
 
-def print_metrics(metrics):
-    snap = metrics.snapshot()
-    table = Table(title=f"Architecture: {snap['architecture']}", box=box.ROUNDED, title_style="bold cyan")
+def print_metadata(model_name: str, total_tokens: int):
+    sep = Panel.fit(
+        Text.from_markup(
+            "[bold cyan]MCP Servers[/bold cyan]\n"
+            + "\n".join(f"  • [yellow]{s[0]:24s}[/yellow]  [dim]({s[1]})[/dim]  {s[3]}" for s in MCP_SERVERS)
+            + "\n\n"
+            + "[bold cyan]Architectures[/bold cyan]\n"
+            + "\n".join(f"  • [yellow]{a[0]:24s}[/yellow]  {a[2]}" for a in ARCHITECTURES)
+            + "\n\n"
+            + f"[bold cyan]Model[/bold cyan]\n  {model_name}  [dim]({total_tokens} tokens on connection)[/dim]"
+        ),
+        border_style="cyan",
+        padding=(1, 2),
+    )
+    console.print(sep)
+
+
+def print_scenario_header(wf: dict):
+    expected = ", ".join(f"[yellow]{m}[/yellow]" for m in wf["expected_mcps"])
+    console.print()
+    console.print("━" * 66, style="bold white")
+    console.print(f"  [bold white]{wf['name']}[/bold white]")
+    console.print(f"  [dim]{wf['description']}[/dim]")
+    console.print(f"  [bold]Expected MCPs:[/bold] {expected}")
+    console.print("━" * 66, style="bold white")
+    console.print()
+
+
+def print_comparison_table(metrics: list, wf_name: str):
+    arch_metrics = [m for m in metrics if m.workflow_name == wf_name]
+    if not arch_metrics:
+        return
+
+    table = Table(box=box.ROUNDED, title_style="bold cyan", expand=True)
     table.add_column("Metric", style="cyan", width=28)
-    table.add_column("Value", style="yellow", justify="right")
-    rows = [
-        ("Total Tokens", "total_tokens"),
-        ("Input Tokens", "prompt_tokens"),
-        ("Output Tokens", "completion_tokens"),
-        ("Reasoning Tokens", "reasoning_tokens"),
-        ("", None),
-        ("Tool Schema Tokens", "tool_schema_tokens"),
-        ("Orchestration Tokens", "orchestration_prompt_tokens"),
-        ("Router Tokens", "router_tokens"),
-        ("Inter-Agent Tokens", "inter_agent_tokens"),
-        ("", None),
-        ("Tools Exposed", "tools_exposed"),
-        ("Tools Used", "tools_used"),
-        ("Real Tool Calls", "real_tool_calls"),
-        ("Agent Hops", "agent_hops"),
-        ("MCPs Activated", "mcps_activated"),
-        ("MCP Connections", "mcp_servers_connected"),
-        ("", None),
-        ("Latency", "latency_ms"),
-    ]
-    for label, key in rows:
-        if key is None:
-            table.add_row("", "", style="dim")
-            continue
-        val = snap.get(key, "N/A")
-        if key == "latency_ms":
-            table.add_row(label, f"{val:,.1f} ms")
-        else:
-            table.add_row(label, f"{val:,}")
+    for m in arch_metrics:
+        table.add_column(m.architecture_name, style="yellow", justify="right")
+
+    for key, label in COMPARISON_METRICS:
+        row = [label]
+        for m in arch_metrics:
+            if m.tools_truncated == -1:
+                row.append("[red]SKIP[/red]")
+                continue
+            val = getattr(m, key, "N/A")
+            if key == "latency_ms" and isinstance(val, (int, float)):
+                row.append(f"{val:,.1f} ms")
+            elif isinstance(val, float):
+                row.append(f"{val:,.1f}")
+            else:
+                row.append(f"{val:,}")
+        table.add_row(*row)
+
     console.print(table)
 
 
 async def main():
     separator("EXPERIMENT 2: REAL MCP ORCHESTRATION BENCHMARK")
 
-    console.print("[bold]MCP Servers:[/bold] filesystem (npx), git (uvx), fetch (npx), memory (npx), SQLite (uvx), sequential-thinking (npx)")
-    console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]Bifrost[/blue] Code Mode), Multi-Agent (direct)")
-    console.print()
-
-    client, _model_name = select_provider()
+    client, model_name = select_provider()
 
     try:
         console.print("[dim]Verifying connection...[/dim]")
@@ -83,39 +134,43 @@ async def main():
         if test.error:
             console.print(f"[red]  Connection error: {test.error}[/red]")
             sys.exit(1)
-        console.print(f"[green]  Connected ({client.model})[/green] ({test.usage.total_tokens} tokens)\n")
+        conn_tokens = test.usage.total_tokens
+        console.print(f"[green]  Connected ({client.model})[/green] ({conn_tokens} tokens)\n")
     except Exception as e:
         console.print(f"[red]  Cannot connect to LM Studio: {e}[/red]")
         sys.exit(1)
 
+    print_metadata(model_name, conn_tokens)
+
     all_metrics = TokenTracker()
 
-    architectures = [
-        ("Federated (Bifrost)", FederatedOrchestrator),
-        ("Centralized (1MCP)", CentralizedOrchestrator),
-    ]
-
-    for name, ArchClass in architectures:
-        separator(f"RUNNING: {name}")
+    for name, ArchClass, _ in ARCHITECTURES:
+        console.print(f"\n[bold yellow]Running {name}...[/bold yellow]")
         orchestrator = ArchClass(client)
         try:
             for i, wf in enumerate(WORKFLOWS, 1):
-                console.print(f"\n[bold yellow]  Workflow {i}: {wf['name']}[/bold yellow]")
-                console.print("  " + "─" * 60, style="dim")
+                console.print(f"  [{i}/{len(WORKFLOWS)}] {wf['name']} ... ", end="")
                 try:
                     metrics = await orchestrator.run(wf)
                     all_metrics.metrics.append(metrics)
-                    print_metrics(metrics)
+                    if metrics.tools_truncated == -1:
+                        console.print("[red]SKIP (budget exceeded)[/red]")
+                    else:
+                        console.print(f"[green]done[/green] ({metrics.total_tokens:,} tokens, {metrics.latency_ms/1000:.1f}s)")
                 except Exception as e:
-                    console.print(f"  [red]Error: {e}[/red]")
-                    import traceback
+                    console.print(f"[red]Error: {e}[/red]")
                     traceback.print_exc()
         finally:
             if hasattr(orchestrator, 'close'):
                 await orchestrator.close()
 
-    separator("FINAL COMPARISON")
-    all_metrics.print_comparison(console)
+    separator("SCENARIO ANALYSIS")
+    console.print("[dim][red]SKIP[/red] = tool schemas exceeded token budget; architecture did not run for that workflow[/dim]")
+    console.print()
+
+    for wf in WORKFLOWS:
+        print_scenario_header(wf)
+        print_comparison_table(all_metrics.metrics, wf["name"])
 
     os.makedirs("results", exist_ok=True)
     results = all_metrics.get_results()
