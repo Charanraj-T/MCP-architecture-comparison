@@ -27,9 +27,10 @@ class CentralizedOrchestrator:
 
     def _select_tools_for_budget(self, tool_names: list[str], fixed_overhead: int) -> list[str]:
         system_prefix = (
-            "You are an AI assistant with access to tools.\n"
-            'Output: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
-            "After all calls: FINAL_ANSWER: <answer>\n\n"
+            "You are an AI assistant with access to tools.\n\n"
+            "To call a tool, output a JSON code block:\n"
+            '```json\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n```\n\n'
+            "After all tool calls, output: FINAL_ANSWER: your final answer\n\n"
             "Available tools:\n"
         )
         prompt_tokens = self._count_tokens(system_prefix)
@@ -90,9 +91,12 @@ class CentralizedOrchestrator:
         tool_text = self.registry.tool_schema_text(selected_names)
 
         system = (
-            "You are an AI assistant with access to tools.\n"
-            'Output: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
-            "After all calls: FINAL_ANSWER: <answer>\n\n"
+            "You are an AI assistant with access to tools.\n\n"
+            "To call a tool, output a JSON code block:\n"
+            '```json\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n```\n\n'
+            "Example:\n"
+            '```json\n{"name": "read_file", "arguments": {"path": "/etc/hosts"}}\n```\n\n'
+            "After all tool calls, output: FINAL_ANSWER: your final answer\n\n"
             "Available tools:\n" + tool_text
         )
 

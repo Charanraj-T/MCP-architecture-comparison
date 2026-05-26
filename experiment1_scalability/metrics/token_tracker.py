@@ -13,6 +13,7 @@ class TokenTracker:
 class WorkflowMetrics:
     workflow_name: str = ""
     architecture_name: str = ""
+    model_name: str = ""
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -35,6 +36,7 @@ class WorkflowMetrics:
         return {
             "workflow": self.workflow_name,
             "architecture": self.architecture_name,
+            "model": self.model_name,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "reasoning_tokens": self.reasoning_tokens,

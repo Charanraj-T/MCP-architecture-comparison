@@ -1,6 +1,7 @@
 import json
 import re
 import warnings
+from typing import Optional
 from pathlib import Path
 
 import tiktoken
@@ -14,7 +15,7 @@ _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
 
 
 
-def _extract_domains(text: str) -> list[str]:
+def _extract_domains(text: str) -> Optional[list[str]]:
     try:
         match = re.search(r'\{.*?"domains".*?\}', text, re.DOTALL)
         if match:
@@ -24,7 +25,7 @@ def _extract_domains(text: str) -> list[str]:
                 return domains
     except (json.JSONDecodeError, KeyError):
         pass
-    return list(DOMAIN_TYPES)
+    return None
 
 
 class FederatedOrchestrator:
@@ -63,24 +64,43 @@ class FederatedOrchestrator:
 
         domain_desc = "\n".join(f"- {d}" for d in DOMAIN_TYPES)
         router_prompt = (
-            "Classify this request into relevant domains. "
-            "Only select absolutely necessary domains.\n\n"
+            "Classify this user request into the most relevant domains from the list below.\n"
+            "Choose ONLY domains that are strictly necessary for the task.\n\n"
             f"Available domains:\n{domain_desc}\n\n"
-            f'Respond: {{"domains": ["domain1", "domain2"]}}\n\nRequest: {workflow["prompt"]}'
+            "Example response format:\n"
+            '{"domains": ["code_search", "database"]}\n\n'
+            "Never include domains that are not needed. If no specific domain matches, return empty.\n"
+            f'User request: {workflow["prompt"]}\n\n'
+            'Respond with JSON only: {"domains": [...]}'
         )
 
-        router_response = await self.client.chat([{"role": "user", "content": router_prompt}], temperature=0.1)
-        if router_response.error:
-            metrics.tools_truncated = -1
-            warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: router crashed ({router_response.error})", ResourceWarning)
-            return metrics
-        metrics.prompt_tokens += router_response.usage.prompt_tokens
-        metrics.completion_tokens += router_response.usage.completion_tokens
-        metrics.reasoning_tokens += router_response.usage.reasoning_tokens
-        metrics.total_tokens += router_response.usage.total_tokens
-        total_latency = router_response.latency_ms
+        domains = None
+        router_latency = 0.0
+        for attempt in range(2):
+            router_response = await self.client.chat([{"role": "user", "content": router_prompt}], temperature=0.1)
+            if router_response.error:
+                metrics.tools_truncated = -1
+                warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: router crashed ({router_response.error})", ResourceWarning)
+                return metrics
+            router_latency += router_response.latency_ms
+            metrics.prompt_tokens += router_response.usage.prompt_tokens
+            metrics.completion_tokens += router_response.usage.completion_tokens
+            metrics.reasoning_tokens += router_response.usage.reasoning_tokens
+            metrics.total_tokens += router_response.usage.total_tokens
+            metrics.agent_hops += 1
 
-        domains = _extract_domains(router_response.content or "")
+            domains = _extract_domains(router_response.content or "")
+            if domains is not None:
+                break
+            if attempt == 0:
+                router_prompt += "\n\nInvalid format. Respond with ONLY valid JSON: {\"domains\": [...]}"
+
+        if domains is None:
+            metrics.tools_truncated = -1
+            warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: router returned invalid JSON after retry", ResourceWarning)
+            return metrics
+
+        total_latency = router_latency
 
         active_tool_names = self._get_tools_for_domains(domains)
         active_mcp_count = sum(1 for m in self.mcps if m["domain"] in domains)
@@ -89,9 +109,10 @@ class FederatedOrchestrator:
         prompt_overhead = self._count_tokens(workflow["prompt"]) + 200
 
         system_overhead = self._count_tokens(
-            f"You are an AI assistant with access to domain MCPs: {', '.join(domains)}.\n"
-            'Output: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
-            "After all calls: FINAL_ANSWER: <answer>\n\n"
+            f"You are an AI assistant with access to domain MCPs: {', '.join(domains)}.\n\n"
+            "To call a tool, output a JSON code block:\n"
+            '```json\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n```\n\n'
+            "After all tool calls, output: FINAL_ANSWER: your final answer\n\n"
             "Available tools:\n"
         )
 
@@ -139,12 +160,13 @@ class FederatedOrchestrator:
         metrics.tools_exposed = len(selected_names)
         metrics.tools_truncated = len(active_tool_names) - len(selected_names)
         metrics.mcps_activated = active_mcp_count
-        metrics.agent_hops = 0
+        # agent_hops accumulates router (already counted) + execution turns
 
         system = (
-            f"You are an AI assistant with access to domain MCPs: {', '.join(domains)}.\n"
-            'Output: TOOL_CALL: {"name": "...", "arguments": {...}}\n'
-            "After all calls: FINAL_ANSWER: <answer>\n\n"
+            f"You are an AI assistant with access to domain MCPs: {', '.join(domains)}.\n\n"
+            "To call a tool, output a JSON code block:\n"
+            '```json\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n```\n\n'
+            "After all tool calls, output: FINAL_ANSWER: your final answer\n\n"
             "Available tools:\n" + tool_text
         )
 
@@ -197,8 +219,8 @@ class FederatedOrchestrator:
         metrics.latency_ms = round(total_latency, 1)
         metrics.explanation = (
             "Router LLM call first filters to relevant domains, injecting only their tools. "
-            "Extra hop for routing but schema tokens are 20-80% lower than Centralized. "
-            "Scales well at moderate MCP counts but adds latency from the routing step."
+            "Extra hop for routing but schema tokens are lower than Centralized when filtering works. "
+            "Router degrades at high MCP counts — may return all domains, eliminating savings."
         )
 
         self.logger.log_event(workflow["name"], "Federated MCP", "done", metrics.snapshot())

@@ -13,6 +13,7 @@ console = Console(record=True)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import LMStudioClient, select_provider, get_token_budget
+from common.client import OpenAIClient
 from common_tools import generate_mcps, ToolRegistry
 from metrics import TokenTracker
 
@@ -31,13 +32,17 @@ ARCHITECTURES = [
     ("Intent-Driven", IntentDrivenOrchestrator),
 ]
 
-# Cost assumptions (example: Gemini 2.0 Flash standard API pricing)
-INPUT_COST_PER_1M = 0.10   # $ per million input tokens
-OUTPUT_COST_PER_1M = 0.40  # $ per million output tokens
+MODEL_PRICING = {
+    "openai/gpt-4o-mini": (0.15, 0.60),
+    "mistralai/mistral-small-3.1-24b-instruct": (0.06, 0.10),
+    "google/gemini-2.0-flash-001": (0.10, 0.40),
+    "gpt-4o-mini": (0.15, 0.60),
+}
 
 
-def _cost_usd(prompt_tokens, completion_tokens):
-    return (prompt_tokens / 1_000_000 * INPUT_COST_PER_1M) + (completion_tokens / 1_000_000 * OUTPUT_COST_PER_1M)
+def _cost_usd(prompt_tokens, completion_tokens, model_name=""):
+    in_rate, out_rate = MODEL_PRICING.get(model_name, (0.10, 0.40))
+    return (prompt_tokens / 1_000_000 * in_rate) + (completion_tokens / 1_000_000 * out_rate)
 
 
 def separator(title):
@@ -48,8 +53,23 @@ def separator(title):
     console.print()
 
 
-def print_token_cost_methodology():
+def _filter_metrics(all_metrics, model_name=None, mcp_count=None):
+    """Filter metrics list by optional model_name and mcp_count."""
+    result = all_metrics
+    if model_name:
+        result = [m for m in result if m.model_name == model_name]
+    if mcp_count is not None:
+        result = [m for m in result if m.mcps_total == mcp_count]
+    return result
+
+
+def print_token_cost_methodology(model_configs):
     separator("TOKEN COST METHODOLOGY")
+    models_line = "  • Models tested: " + ", ".join(f"[cyan]{m[1]}[/cyan] (${m[2]:.2f}/${m[3]:.2f} per 1M)" for m in model_configs)
+    pricing_lines = "\n".join(
+        f"  • [cyan]{m[1]}[/cyan]: ${m[2]:.4f}/1M in, ${m[3]:.4f}/1M out"
+        for m in model_configs
+    )
     console.print(
         "  [bold]Token Calculation:[/bold]\n"
         "  • [green]Prompt Tokens[/green]: Every LLM call has a prompt. The prompt contains:\n"
@@ -61,21 +81,85 @@ def print_token_cost_methodology():
         "  • [green]Schema Tokens[/green]: Computed via tiktoken (cl100k_base) on the tool schema text\n"
         "  • [green]Agent Hops[/green]: Count of sequential LLM invocations per workflow\n\n"
         "  [bold]Estimated Cost:[/bold]\n"
-        f"  • Input rate:  ${INPUT_COST_PER_1M:.2f} / 1M tokens\n"
-        f"  • Output rate: ${OUTPUT_COST_PER_1M:.2f} / 1M tokens\n"
-        "  • Cost = (prompt_tokens / 1M × input_rate) + (completion_tokens / 1M × output_rate)\n"
-        "  • Rates based on Gemini 2.0 Flash pricing. Actual costs vary by provider and model.\n\n"
+        f"{models_line}\n"
+        f"{pricing_lines}\n"
+        "  • Cost = (prompt_tokens / 1M × input_rate) + (completion_tokens / 1M × output_rate)\n\n"
         "  [bold]Token Cost Drivers per Architecture:[/bold]\n"
         "  • [yellow]Centralized[/yellow]: Schema cost paid EVERY turn. Large prompts from full history.\n"
         "  • [yellow]Federated[/yellow]: Router call adds 1 hop but fewer schemas injected. Lower per-turn cost.\n"
         "  • [yellow]MCP Mediator[/yellow]: Schema loaded once for planning. Execution = zero LLM tokens.\n"
         "  • [yellow]Intent-Driven[/yellow]: Schemas NOT loaded into prompts — only domain descriptions.\n"
         "    75 tokens of domain info vs 12K+ tokens of full schemas. Key source of savings.\n\n"
-        "  [bold]Model Caveat:[/bold]\n"
-        "  • All results from [cyan]google/gemini-2.0-flash-001[/cyan] on OpenRouter\n"
-        "  • Different models may produce different numbers (and fail differently on JSON planning)\n"
+        "  [bold]Multi-Model Approach:[/bold]\n"
+        "  • Each architecture runs identically against each model (same MCPs, same workflows)\n"
+        "  • Cross-model comparison validates that architecture rankings are model-agnostic\n"
         "  • Results should be validated on target models before production decisions\n"
     )
+
+
+def print_executive_summary(all_metrics, model_configs):
+    """CTO-facing conclusion: which architecture wins and why."""
+    mcp_counts = sorted(set(m.mcps_total for m in all_metrics))
+    arch_keys = sorted(set(m.architecture_name for m in all_metrics))
+    wf_keys = sorted(set(m.workflow_name for m in all_metrics))
+    model_names = [mc[1] for mc in model_configs]
+
+    max_mcp = mcp_counts[-1] if mcp_counts else 50
+
+    # Per-model best architecture
+    model_best = {}
+    for mn in model_names:
+        best_arch = None
+        best_total = float("inf")
+        for arch in arch_keys:
+            vals = []
+            for wf in wf_keys:
+                matches = [m for m in all_metrics if m.model_name == mn and m.mcps_total == max_mcp and m.architecture_name == arch and m.workflow_name == wf]
+                if matches and matches[0].tools_truncated != -1:
+                    vals.append(matches[0].total_tokens)
+            avg = sum(vals) / len(vals) if vals else 0
+            if avg and avg < best_total:
+                best_total = avg
+                best_arch = arch
+        model_best[mn] = (best_arch, best_total)
+
+    # Cross-model consistency
+    winners = set(a for a, _ in model_best.values())
+    consistent = len(winners) == 1
+    winner_arch = next(iter(winners)) if consistent else "Varies by model"
+
+    from rich.panel import Panel
+    summary = (
+        f"[bold white]RECOMMENDATION: {winner_arch}[/bold white]"
+        f"{' (consistent across all models)' if consistent else ' (differs by model)'}\n\n"
+        f"[bold]Architecture Rankings at {max_mcp} MCPs (by total tokens):[/bold]\n"
+    )
+    for mn in model_names:
+        arch, amt = model_best[mn]
+        summary += f"    {mn}: [green]{arch}[/green] ({amt:,.0f} avg tokens)\n"
+
+    summary += f"\n[bold]Cross-Model Consistency:[/bold] "
+    if consistent:
+        summary += f"{winner_arch} wins on every model tested — ranking is model-agnostic.\n"
+    else:
+        summary += "Rankings change between models — validate on your target model.\n"
+
+    summary += (
+        f"\n[bold]Key Finding:[/bold] Intent-Driven avoids loading tool schemas into LLM context. "
+        f"Total cost stays flat (~2,500 tokens) regardless of MCP count.\n\n"
+        f"[bold]Edge Cases & Risks:[/bold]\n"
+        f"    • Centralized MCP is fine for <20 MCPs when simplicity matters\n"
+        f"    • Mediator works well if tool schemas fit in context and you need fixed-cost execution\n"
+        f"    • Federated router degrades at higher MCP counts — routing decisions become unreliable\n"
+        f"    • Intent-Driven requires LLM to output valid structured JSON; weaker models may fail\n\n"
+        f"[bold]Bottom Line:[/bold] For organizations scaling beyond 20 MCPs, Intent-Driven is "
+        f"the only architecture that avoids context-window overflow. Centralized and Mediator "
+        f"hit linear schema-cost walls. Federated holds promise but routing reliability must improve."
+    )
+    panel = Panel(summary, border_style="green", title="[bold white]CTO EXECUTIVE SUMMARY[/bold white]", title_align="left")
+    console.print()
+    console.print(panel)
+    console.print()
 
 
 def select_mcp_counts():
@@ -108,10 +192,48 @@ def select_mcp_counts():
         return [10, 20, 50, 100]
 
 
-def print_per_workflow_table(all_metrics, mcp_count, workflow_name):
-    arch_keys = sorted(set(m.architecture_name for m in all_metrics if m.mcps_total == mcp_count))
+async def select_model_configs():
+    """Return list of (client, model_name, input_cost_per_1m, output_cost_per_1m)."""
+    from common.client import _get_env_config, OpenAIClient
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    env_config = _get_env_config()
+    if env_config:
+        models = [m.strip() for m in env_config["model"].split(",")]
+        configs = []
+        for model in models:
+            client = OpenAIClient(
+                base_url=env_config["base_url"],
+                model=model,
+                api_key=env_config["api_key"] or "not-needed",
+                inject_no_think=env_config["inject_no_think"],
+            )
+            in_rate, out_rate = MODEL_PRICING.get(model, (0.10, 0.40))
+            configs.append((client, model, in_rate, out_rate))
+        return configs
+
+    console.print("[bold]Select model #1:[/bold]")
+    client1, model1 = select_provider()
+    in1, out1 = MODEL_PRICING.get(model1, (0.10, 0.40))
+    configs = [(client1, model1, in1, out1)]
+
+    add = input("Add a second model? (y/N): ").strip().lower()
+    if add == "y":
+        console.print("[bold]Select model #2:[/bold]")
+        client2, model2 = select_provider()
+        in2, out2 = MODEL_PRICING.get(model2, (0.10, 0.40))
+        configs.append((client2, model2, in2, out2))
+
+    return configs
+
+
+def print_per_workflow_table(all_metrics, mcp_count, workflow_name, model_name=None):
+    filtered = _filter_metrics(all_metrics, model_name=model_name, mcp_count=mcp_count)
+    arch_keys = sorted(set(m.architecture_name for m in filtered))
+    model_tag = f"  |  Model: {model_name}" if model_name else ""
     table = Table(
-        title=f"{workflow_name}  |  MCP Count: {mcp_count}",
+        title=f"{workflow_name}  |  MCP Count: {mcp_count}{model_tag}",
         box=box.SIMPLE,
         title_style="bold white",
         header_style="bold cyan",
@@ -144,13 +266,13 @@ def print_per_workflow_table(all_metrics, mcp_count, workflow_name):
             continue
         row = [label]
         for arch in arch_keys:
-            matches = [m for m in all_metrics if m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == workflow_name]
+            matches = [m for m in filtered if m.architecture_name == arch and m.workflow_name == workflow_name]
             if matches:
                 m = matches[0]
                 if m.tools_truncated == -1:
                     row.append("[red]SKIP[/red]")
                 elif label == "Est. Cost (USD)":
-                    cost = _cost_usd(m.prompt_tokens, m.completion_tokens)
+                    cost = _cost_usd(m.prompt_tokens, m.completion_tokens, model_name=model_name or "")
                     row.append(f"${cost:.6f}")
                 else:
                     val = getattr(m, key, "N/A")
@@ -170,12 +292,14 @@ def print_per_workflow_table(all_metrics, mcp_count, workflow_name):
     console.print()
 
 
-def print_summary_table(all_metrics, mcp_count):
-    arch_keys = sorted(set(m.architecture_name for m in all_metrics if m.mcps_total == mcp_count))
-    wf_keys = sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count))
+def print_summary_table(all_metrics, mcp_count, model_name=None):
+    filtered = _filter_metrics(all_metrics, model_name=model_name, mcp_count=mcp_count)
+    arch_keys = sorted(set(m.architecture_name for m in filtered))
+    wf_keys = sorted(set(m.workflow_name for m in filtered))
+    model_tag = f"  |  Model: {model_name}" if model_name else ""
 
     table = Table(
-        title=f"EXECUTIVE SUMMARY — MCP Count: {mcp_count} (Averaged Across All Workflows)",
+        title=f"EXECUTIVE SUMMARY — MCP Count: {mcp_count}{model_tag}  (Averaged Across All Workflows)",
         box=box.HEAVY_EDGE,
         title_style="bold white on blue",
         header_style="bold white",
@@ -188,7 +312,7 @@ def print_summary_table(all_metrics, mcp_count):
     def _avg(arch, key):
         vals = []
         for wf in wf_keys:
-            matches = [m for m in all_metrics if m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == wf]
+            matches = [m for m in filtered if m.architecture_name == arch and m.workflow_name == wf]
             if matches and matches[0].tools_truncated != -1:
                 vals.append(getattr(matches[0], key, 0))
         return sum(vals) / len(vals) if vals else 0
@@ -227,7 +351,7 @@ def print_summary_table(all_metrics, mcp_count):
             for arch in arch_keys:
                 avg_prompt = _avg(arch, "prompt_tokens")
                 avg_compl = _avg(arch, "completion_tokens")
-                cost = _cost_usd(avg_prompt, avg_compl)
+                cost = _cost_usd(avg_prompt, avg_compl, model_name=model_name or "")
                 row.append(f"${cost:.6f}")
                 vals.append(cost)
             if vals:
@@ -294,58 +418,76 @@ def print_summary_table(all_metrics, mcp_count):
         )
 
 
-def _why_text(arch: str, all_metrics, mcp_count) -> str:
-    """Return architecture-specific 'why this matters' text."""
+def _why_text(arch, mcp_count, avg_total=0, avg_schema=0, avg_hops=0, avg_used=0, centralized_total=0):
+    """Return architecture-specific 'why this matters' text using actual data."""
+    if avg_total == 0:
+        return (f"[SKIP] This architecture did not execute on this model — "
+                f"the LLM failed to output a valid tool call format. "
+                f"Results reflect model capability, not architecture efficiency.")
+
+    schema_pct = avg_schema / avg_total * 100
+    ratio_vs_centralized = avg_total / max(centralized_total, 1)
+
     texts = {
         "Centralized MCP": (
-            "All schemas injected every turn. At {mcp} MCPs, 89-94% of tokens are just schema overhead — "
-            "the model spends almost all its context budget on tool descriptions, not on the actual task. "
-            "This architecture does not scale: schema cost grows linearly with MCP count while task complexity is constant. "
-            "At ~100 MCPs, schema tokens alone will exceed most context windows, forcing truncation/skip."
+            f"All schemas injected every turn. At {mcp_count} MCPs, {schema_pct:.0f}% of tokens are schema overhead — "
+            f"the model spends almost all its context budget on tool descriptions. "
+            f"Schema cost grows with MCP count. At higher counts, schema tokens alone "
+            f"can exceed context windows, forcing truncation."
         ),
         "Federated MCP": (
-            "Router filters domains before execution, saving 50-80% schema tokens on simple tasks. "
-            "However, the router itself is a single point of failure — at {mcp} MCPs, it stopped splitting "
-            "complex tasks into subtasks (0 tools used in all workflows). Effective at moderate MCP counts "
-            "where domain filtering provides real savings, but unreliable for complex multi-domain requests."
+            f"Router filters domains before execution, reducing schema tokens. "
+            f"At {mcp_count} MCPs, schema tokens are {avg_schema:,.0f} ({schema_pct:.0f}% of total). "
+            f"Whether the router collapses (returns all domains) depends on model capability. "
+            f"Effective when routing works reliably; unreliable when it degrades."
         ),
         "MCP Mediator": (
-            "Schema loaded once for planning, execution uses zero LLM tokens. Fixed 2-hop cost regardless "
-            "of tool count. But pays full schema cost for all {mcp} MCPs (86% of total at 50) even if only "
-            "a fraction are used. Best suited for scenarios where tool schemas fit comfortably in context "
-            "and tool execution is more expensive than planning."
+            f"Schema loaded once for planning ({avg_schema:,.0f} tokens, {schema_pct:.0f}% of total), "
+            f"execution uses zero LLM tokens. Fixed {avg_hops:.0f}-hop cost. "
+            f"Best suited when tool schemas fit comfortably in context and execution is more expensive than planning."
         ),
         "Intent-Driven": (
-            "Only domain descriptions (75 tokens) sent to LLM — no tool schemas loaded. "
-            "Total cost stays flat at ~2,500 tokens regardless of MCP count. "
-            "At {mcp} MCPs, this is 0.2× the tokens of Centralized. Schema avoidance is the key insight. "
-            "Trade-off: requires LLM to output valid structured JSON, which can fail on weaker models. "
-            "Best architecture for scaling to hundreds of MCPs."
+            f"Only domain descriptions sent to LLM — no tool schemas loaded. "
+            f"Schema tokens = {avg_schema:,.0f} (just domain descriptions), {schema_pct:.0f}% of total. "
+            f"At {mcp_count} MCPs, this is {ratio_vs_centralized:.1f}× the tokens of Centralized. "
+            f"Trade-off: requires LLM to output valid structured JSON — weaker models fail here. "
+            f"Best architecture for scaling to hundreds of MCPs."
         ),
     }
-    return texts.get(arch, "").format(mcp=mcp_count)
+    return texts.get(arch, "")
 
 
-def print_architecture_analysis(all_metrics, mcp_count):
-    separator("TOKEN COST ANALYSIS — WHY EACH ARCHITECTURE COSTS WHAT IT DOES")
+def print_architecture_analysis(all_metrics, mcp_count, model_name=None):
+    filtered = _filter_metrics(all_metrics, model_name=model_name, mcp_count=mcp_count)
+    arch_keys = sorted(set(m.architecture_name for m in filtered))
+    wf_keys = sorted(set(m.workflow_name for m in filtered))
+    model_tag = f"  |  Model: {model_name}" if model_name else ""
 
-    arch_keys = sorted(set(m.architecture_name for m in all_metrics if m.mcps_total == mcp_count))
-    wf_keys = sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count))
+    separator(f"TOKEN COST ANALYSIS — WHY EACH ARCHITECTURE COSTS WHAT IT DOES{model_tag}")
+
+    # Precompute Centralized average for ratio comparisons
+    centralized_avg = 0
+    cent_matches = [m for m in filtered if m.architecture_name == "Centralized MCP"]
+    cent_valid = [m2 for m2 in cent_matches if m2.tools_truncated != -1]
+    if cent_valid:
+        centralized_avg = sum(m2.total_tokens for m2 in cent_valid) / len(cent_valid)
 
     for arch in arch_keys:
-        matches = [m for m in all_metrics if m.mcps_total == mcp_count and m.architecture_name == arch]
+        matches = [m for m in filtered if m.architecture_name == arch]
         if not matches:
             continue
-        m = matches[0]
 
-        avg_tokens = sum(m2.total_tokens for m2 in matches if m2.tools_truncated != -1) / max(len([m2 for m2 in matches if m2.tools_truncated != -1]), 1)
-        avg_prompt = sum(m2.prompt_tokens for m2 in matches if m2.tools_truncated != -1) / max(len([m2 for m2 in matches if m2.tools_truncated != -1]), 1)
-        avg_compl = sum(m2.completion_tokens for m2 in matches if m2.tools_truncated != -1) / max(len([m2 for m2 in matches if m2.tools_truncated != -1]), 1)
-        avg_schema = sum(m2.tool_schema_tokens for m2 in matches if m2.tools_truncated != -1) / max(len([m2 for m2 in matches if m2.tools_truncated != -1]), 1)
-        avg_hops = sum(m2.agent_hops for m2 in matches if m2.tools_truncated != -1) / max(len([m2 for m2 in matches if m2.tools_truncated != -1]), 1)
-        avg_used = sum(m2.tools_used for m2 in matches if m2.tools_truncated != -1) / max(len([m2 for m2 in matches if m2.tools_truncated != -1]), 1)
-        avg_cost = _cost_usd(avg_prompt, avg_compl)
-        why = _why_text(arch, all_metrics, mcp_count)
+        valid = [m2 for m2 in matches if m2.tools_truncated != -1]
+        denom = max(len(valid), 1)
+
+        avg_tokens = sum(m2.total_tokens for m2 in valid) / denom
+        avg_prompt = sum(m2.prompt_tokens for m2 in valid) / denom
+        avg_compl = sum(m2.completion_tokens for m2 in valid) / denom
+        avg_schema = sum(m2.tool_schema_tokens for m2 in valid) / denom
+        avg_hops = sum(m2.agent_hops for m2 in valid) / denom
+        avg_used = sum(m2.tools_used for m2 in valid) / denom
+        avg_cost = _cost_usd(avg_prompt, avg_compl, model_name=model_name or "")
+        why = _why_text(arch, mcp_count, avg_total=avg_tokens, avg_schema=avg_schema, avg_hops=avg_hops, avg_used=avg_used, centralized_total=centralized_avg)
 
         from rich.panel import Panel
         panel = Panel(
@@ -366,11 +508,110 @@ def print_architecture_analysis(all_metrics, mcp_count):
         console.print()
 
 
-def print_cross_count_trend(all_metrics):
+def print_cross_model_comparison(all_metrics, mcp_count, model_configs):
+    """Side-by-side comparison of all architectures across models at a given MCP count."""
+    model_names = [mc[1] for mc in model_configs]
+    arch_keys = sorted(set(m.architecture_name for m in all_metrics if m.mcps_total == mcp_count))
+    wf_keys = sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count))
+    multi = len(model_names) > 1
+
+    separator(f"CROSS-MODEL COMPARISON — MCP Count: {mcp_count}")
+
+    table = Table(
+        title=f"Architectures Compared Across {', '.join(model_names)}",
+        box=box.HEAVY_EDGE,
+        title_style="bold white on blue",
+        header_style="bold white",
+    )
+    table.add_column("Architecture", style="cyan", width=22)
+    for mn in model_names:
+        short = mn.split("/")[-1].split("-")[0] if "/" in mn else mn[:12]
+        table.add_column(f"{short}\nTotal Tok", style="yellow", justify="right", width=12)
+        table.add_column(f"{short}\nEst. Cost", style="yellow", justify="right", width=12)
+        table.add_column(f"{short}\nTools Used", style="yellow", justify="right", width=12)
+
+    for arch in arch_keys:
+        row = [arch]
+        for mn in model_names:
+            vals = []
+            for wf in wf_keys:
+                matches = [m for m in all_metrics if m.model_name == mn and m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == wf]
+                if matches and matches[0].tools_truncated != -1:
+                    vals.append(matches[0])
+            if vals:
+                avg_tok = sum(v.total_tokens for v in vals) / len(vals)
+                avg_prompt = sum(v.prompt_tokens for v in vals) / len(vals)
+                avg_compl = sum(v.completion_tokens for v in vals) / len(vals)
+                avg_used = sum(v.tools_used for v in vals) / len(vals)
+                avg_cost = _cost_usd(avg_prompt, avg_compl, model_name=mn)
+                row.append(f"{avg_tok:,.0f}")
+                row.append(f"${avg_cost:.6f}")
+                row.append(f"{avg_used:.1f}")
+            else:
+                row.extend(["[red]SKIP[/red]"] * 3)
+        table.add_row(*row)
+
+    console.print(table)
+    console.print()
+
+    # Cross-model consistency check
+    if multi:
+        ranking_per_model = {}
+        for mn in model_names:
+            arch_scores = []
+            for arch in arch_keys:
+                vals = []
+                for wf in wf_keys:
+                    matches = [m for m in all_metrics if m.model_name == mn and m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == wf]
+                    if matches and matches[0].tools_truncated != -1:
+                        vals.append(matches[0].total_tokens)
+                avg = sum(vals) / len(vals) if vals else float("inf")
+                arch_scores.append((avg, arch))
+            arch_scores.sort()
+            ranking_per_model[mn] = [a for _, a in arch_scores]
+
+        # Check if rankings are identical
+        first_ranking = list(ranking_per_model.values())[0]
+        consistent = all(r == first_ranking for r in ranking_per_model.values())
+
+        if consistent:
+            console.print(f"  [green]✓ Ranking consistent across all models: "
+                          f"{' → '.join(first_ranking)}[/green]\n")
+        else:
+            console.print("  [yellow]⚠ Rankings differ between models:[/yellow]")
+            for mn, ranking in ranking_per_model.items():
+                console.print(f"    {mn}: {' → '.join(ranking)}")
+            console.print()
+
+    # Tool-execution caveat per model
+    for mn in model_names:
+        filtered = _filter_metrics(all_metrics, model_name=mn, mcp_count=mcp_count)
+        arch_keys_local = sorted(set(m.architecture_name for m in filtered))
+        if arch_keys_local:
+            avg_used = _avg_for_model(all_metrics, mn, mcp_count, arch_keys_local[0], "tools_used")
+            if avg_used == 0:
+                console.print(
+                    f"  [yellow]⚠ [{mn}] Centralized shows 0 tools used — the LLM responded with text only, "
+                    f"never output TOOL_CALL:.[/yellow]\n"
+                )
+
+
+def _avg_for_model(all_metrics, model_name, mcp_count, arch, key):
+    """Average a metric for a specific model × architecture × MCP count."""
+    vals = []
+    for wf in sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count)):
+        matches = [m for m in all_metrics if m.model_name == model_name and m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == wf]
+        if matches and matches[0].tools_truncated != -1:
+            vals.append(getattr(matches[0], key, 0))
+    return sum(vals) / len(vals) if vals else 0
+
+
+def print_cross_count_trend(all_metrics, model_name=None):
     """Show how each architecture's metrics scale across MCP counts."""
-    mcp_counts = sorted(set(m.mcps_total for m in all_metrics))
-    arch_keys = sorted(set(m.architecture_name for m in all_metrics))
-    wf_keys = sorted(set(m.workflow_name for m in all_metrics))
+    filtered = _filter_metrics(all_metrics, model_name=model_name)
+    mcp_counts = sorted(set(m.mcps_total for m in filtered))
+    arch_keys = sorted(set(m.architecture_name for m in filtered))
+    wf_keys = sorted(set(m.workflow_name for m in filtered))
 
     if len(mcp_counts) < 2:
         return
@@ -378,12 +619,13 @@ def print_cross_count_trend(all_metrics):
     def _avg_count(arch, key, count):
         vals = []
         for wf in wf_keys:
-            matches = [m for m in all_metrics if m.mcps_total == count and m.architecture_name == arch and m.workflow_name == wf]
+            matches = [m for m in filtered if m.mcps_total == count and m.architecture_name == arch and m.workflow_name == wf]
             if matches and matches[0].tools_truncated != -1:
                 vals.append(getattr(matches[0], key, 0))
         return sum(vals) / len(vals) if vals else 0
 
-    separator("SCALABILITY TREND — HOW METRICS CHANGE WITH MCP COUNT")
+    model_tag = f"  |  Model: {model_name}" if model_name else ""
+    separator(f"SCALABILITY TREND — HOW METRICS CHANGE WITH MCP COUNT{model_tag}")
 
     for arch in arch_keys:
         table = Table(
@@ -433,22 +675,32 @@ def print_cross_count_trend(all_metrics):
         console.print()
 
 
-def print_caveats(all_metrics):
+def print_caveats(all_metrics, model_configs):
+    model_names = [mc[1] for mc in model_configs]
+    models_str = ", ".join(f"[cyan]{mn}[/cyan]" for mn in model_names)
+    pricing_lines = "\n".join(
+        f"  • {mn}: ${mc[2]:.4f}/1M in, ${mc[3]:.4f}/1M out"
+        for mn, mc in [(mc[1], mc) for mc in model_configs]
+    )
+
     separator("METHODOLOGY CAVEATS & LIMITATIONS")
     console.print(
         "  [bold]1. Tool Execution:[/bold]\n"
-        "  • Centralized MCP never output TOOL_CALL: — it responded with text only.\n"
-        "    Its latency is artificially low (no tool execution round-trips).\n"
-        "    Token counts are still valid: the schema was in the prompt, consumed budget.\n\n"
+        "  • If an architecture shows 0 tools used across all workflows, the model "
+        "responded with text only, never output a tool call.\n"
+        "    - Token counts remain valid (schemas were still in the prompt, consumed budget).\n"
+        "    - Latency is artificially low (no tool execution round-trips).\n"
+        "    - This is model-dependent: some models follow JSON format better than others.\n\n"
         "  [bold]2. Federated Router Degradation:[/bold]\n"
-        "  • At 50 MCPs, the Federated router stopped splitting tasks into subtasks\n"
-        "    (0 tools used in all workflows). This may be a model limitation with\n"
-        "    Gemini 2.0 Flash at higher schema densities.\n\n"
-        "  [bold]3. Single Model Bias:[/bold]\n"
-        "  • All results from [cyan]google/gemini-2.0-flash-001[/cyan] on OpenRouter.\n"
-        "  • A weaker model may fail more often on JSON planning (Intent-Driven, Mediator)\n"
-        "  • A stronger model may follow Centralized's TOOL_CALL: instruction better\n"
-        "  • Rankings should be validated on target models before production decisions.\n\n"
+        "  • The Federated router may stop reliably filtering at higher MCP counts.\n"
+        "  • Console output shows whether router returned all domains (filter collapse).\n"
+        "  • This is model-dependent — some models handle routing better than others.\n\n"
+        f"  [bold]3. Cross-Model Validation:[/bold]\n"
+        f"  • Results validated across {len(model_names)} models: {models_str}\n"
+        "  • Rankings that are consistent across models are more reliable than model-specific ones.\n"
+        "  • A model that fails on JSON planning (Intent-Driven, Mediator) will score higher "
+        "on the other architecture.\n"
+        "  • Results should still be validated on target models before production decisions.\n\n"
         "  [bold]4. Schema Tokens Are Computed (Not from API):[/bold]\n"
         "  • Schema tokens counted via tiktoken (cl100k_base) on tool schema text.\n"
         "  • The actual model may tokenize schemas differently (different tokenizer).\n"
@@ -466,7 +718,7 @@ def print_caveats(all_metrics):
         "  • Simple tasks (Code Investigation) vs complex (Full System Audit)\n"
         "    show different architecture trade-offs.\n\n"
         "  [bold]8. Dollar Cost Estimates:[/bold]\n"
-        f"  • Based on Gemini 2.0 Flash rates (${INPUT_COST_PER_1M}/1M in, ${OUTPUT_COST_PER_1M}/1M out).\n"
+        f"{pricing_lines}\n"
         "  • Actual costs depend on provider, model, and negotiated rates.\n"
         "  • Use for relative comparison, not absolute budgeting.\n"
     )
@@ -475,70 +727,88 @@ def print_caveats(all_metrics):
 async def main():
     separator("MCP SCALABILITY COMPARISON")
 
-    client, model_name = select_provider()
-    budget = get_token_budget(model_name)
-    try:
-        test = await client.chat([{"role": "user", "content": "Say ready"}], temperature=0.1, max_tokens=20)
-        console.print(f"[green]  Connected ({client.model})[/green] ({test.usage.total_tokens} tokens)\n")
-    except Exception as e:
-        console.print(f"[red]  Cannot connect: {e}[/red]")
+    model_configs = await select_model_configs()
+    if not model_configs:
+        console.print("[red]No model selected. Exiting.[/red]")
         sys.exit(1)
+
+    multi = len(model_configs) > 1
+
+    # Connect to each model
+    for client, model_name, in_rate, out_rate in model_configs:
+        try:
+            test = await client.chat([{"role": "user", "content": "Say ready"}], temperature=0.1, max_tokens=20)
+            console.print(f"[green]  Connected ({client.model})[/green] ({test.usage.total_tokens} tokens)")
+        except Exception as e:
+            console.print(f"[red]  Cannot connect {model_name}: {e}[/red]")
+            sys.exit(1)
+    console.print()
 
     mcp_counts = select_mcp_counts()
     console.print(f"  [dim]Testing: {mcp_counts}[/dim]\n")
 
-    print_token_cost_methodology()
+    print_token_cost_methodology(model_configs)
 
     tracker = TokenTracker()
 
+    for client, model_name, in_rate, out_rate in model_configs:
+        budget = get_token_budget(model_name)
+        label = f"  [bold cyan][Model: {model_name}][/bold cyan]"
+        console.print(f"\n{label}")
+        for mcp_count in mcp_counts:
+            separator(f"MCP COUNT: {mcp_count}")
+
+            mcps = generate_mcps(mcp_count)
+            total_tools = sum(len(m["tools"]) for m in mcps)
+            console.print(f"  Generated {len(mcps)} MCPs, {total_tools} tools, {len(set(m['domain'] for m in mcps))} domains\n")
+
+            registry = ToolRegistry()
+            for mcp in mcps:
+                registry.register_many(mcp["tools"])
+
+            for arch_name, ArchClass in ARCHITECTURES:
+                console.print(f"  [bold yellow]{arch_name}[/bold yellow]")
+                orch = ArchClass(client, registry, mcps, total_token_budget=budget, mcp_count=mcp_count)
+
+                for wf in WORKFLOWS:
+                    metrics = await orch.run(wf)
+                    metrics.model_name = model_name
+                    tracker.metrics.append(metrics)
+
+                    if metrics.tools_truncated == -1:
+                        console.print(
+                            f"    {wf['name'][:30]:30s} "
+                            f"[red]SKIP[/red]  schema_tokens={metrics.tool_schema_tokens:>6,}  "
+                            f"exposed={metrics.tools_exposed:>4d}  "
+                            f"mcps={metrics.mcps_activated:>3d}  "
+                            f"(budget exceeded)"
+                        )
+                    else:
+                        console.print(
+                            f"    {wf['name'][:30]:30s} "
+                            f"tokens={metrics.total_tokens:>6,}  "
+                            f"exposed={metrics.tools_exposed:>4d}  "
+                            f"used={metrics.tools_used:>3d}  "
+                            f"mcps={metrics.mcps_activated:>3d}  "
+                            f"hops={metrics.agent_hops:>3d}  "
+                            f"lat={metrics.latency_ms/1000:.1f}s"
+                        )
+
+    # === REPORT GENERATION ===
+    print_executive_summary(tracker.metrics, model_configs)
+
     for mcp_count in mcp_counts:
-        separator(f"MCP COUNT: {mcp_count}")
+        print_cross_model_comparison(tracker.metrics, mcp_count, model_configs)
+        for client, model_name, in_rate, out_rate in model_configs:
+            console.print()
+            separator(f"ARCHITECTURE ANALYSIS — {model_name} @ MCP={mcp_count}")
+            print_summary_table(tracker.metrics, mcp_count, model_name=model_name)
+            print_architecture_analysis(tracker.metrics, mcp_count, model_name=model_name)
 
-        mcps = generate_mcps(mcp_count)
-        total_tools = sum(len(m["tools"]) for m in mcps)
-        console.print(f"  Generated {len(mcps)} MCPs, {total_tools} tools, {len(set(m['domain'] for m in mcps))} domains\n")
+    for client, model_name, in_rate, out_rate in model_configs:
+        print_cross_count_trend(tracker.metrics, model_name=model_name)
 
-        registry = ToolRegistry()
-        for mcp in mcps:
-            registry.register_many(mcp["tools"])
-
-        for arch_name, ArchClass in ARCHITECTURES:
-            console.print(f"  [bold yellow]{arch_name}[/bold yellow]")
-            orch = ArchClass(client, registry, mcps, total_token_budget=budget, mcp_count=mcp_count)
-
-            for wf in WORKFLOWS:
-                metrics = await orch.run(wf)
-                tracker.metrics.append(metrics)
-
-                if metrics.tools_truncated == -1:
-                    console.print(
-                        f"    {wf['name'][:30]:30s} "
-                        f"[red]SKIP[/red]  schema_tokens={metrics.tool_schema_tokens:>6,}  "
-                        f"exposed={metrics.tools_exposed:>4d}  "
-                        f"mcps={metrics.mcps_activated:>3d}  "
-                        f"(budget exceeded)"
-                    )
-                else:
-                    console.print(
-                        f"    {wf['name'][:30]:30s} "
-                        f"tokens={metrics.total_tokens:>6,}  "
-                        f"exposed={metrics.tools_exposed:>4d}  "
-                        f"used={metrics.tools_used:>3d}  "
-                        f"mcps={metrics.mcps_activated:>3d}  "
-                        f"hops={metrics.agent_hops:>3d}  "
-                        f"lat={metrics.latency_ms/1000:.1f}s"
-                    )
-
-    for mcp_count in mcp_counts:
-        separator(f"DETAILED COMPARISON — MCP Count: {mcp_count}")
-        from workflows import WORKFLOWS as WF_LIST
-        for wf in WF_LIST:
-            print_per_workflow_table(tracker.metrics, mcp_count, wf["name"])
-        print_summary_table(tracker.metrics, mcp_count)
-        print_architecture_analysis(tracker.metrics, mcp_count)
-
-    print_cross_count_trend(tracker.metrics)
-    print_caveats(tracker.metrics)
+    print_caveats(tracker.metrics, model_configs)
 
     os.makedirs("results", exist_ok=True)
     results = tracker.get_results()

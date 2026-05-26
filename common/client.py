@@ -52,6 +52,8 @@ MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "qwen/qwen-2.5-72b-instruct": 32768,
     "gpt-4o-mini": 131072,
     "gpt-4o": 131072,
+    "openai/gpt-4o": 128000,
+    "openai/gpt-4o-mini": 128000,
 }
 
 
@@ -301,15 +303,17 @@ def select_provider():
         console.print("[bold]Select OpenRouter model:[/bold]")
         console.print("  [1] google/gemini-2.0-flash-001        (free, 1M context)")
         console.print("  [2] meta-llama/llama-3.3-70b-instruct   (paid, but cheap)")
-        console.print("  [3] mistralai/mistral-small-3.1-24b     (paid, but cheap)")
-        console.print("  [4] deepseek/deepseek-chat              (paid, but cheap)")
-        console.print("  [5] custom OpenRouter model slug")
-        model_choice = input("Choice [1-5]: ").strip()
+        console.print("  [3] openai/gpt-4o                       (paid, best format compliance)")
+        console.print("  [4] mistralai/mistral-small-3.1-24b     (paid, but cheap)")
+        console.print("  [5] deepseek/deepseek-chat              (paid, but cheap)")
+        console.print("  [6] custom OpenRouter model slug")
+        model_choice = input("Choice [1-6]: ").strip()
         model_map = {
             "1": "google/gemini-2.0-flash-001",
             "2": "meta-llama/llama-3.3-70b-instruct",
-            "3": "mistralai/mistral-small-3.1-24b-instruct",
-            "4": "deepseek/deepseek-chat",
+            "3": "openai/gpt-4o",
+            "4": "mistralai/mistral-small-3.1-24b-instruct",
+            "5": "deepseek/deepseek-chat",
         }
         model = model_map.get(model_choice)
         if not model:
