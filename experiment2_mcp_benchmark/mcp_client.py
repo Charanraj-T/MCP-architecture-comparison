@@ -141,9 +141,27 @@ class MCPConnection:
                 pass
 
 
+def _resolve_path() -> str:
+    extra = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+    ]
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv:
+        extra.insert(0, os.path.join(venv, "bin"))
+    current = os.environ.get("PATH", "")
+    parts = current.split(":")
+    for p in extra:
+        if p and p not in parts:
+            parts.insert(0, p)
+    return ":".join(parts)
+
+
 async def connect_mcp(server_key: str, env: dict = None) -> MCPConnection:
     definition = MCP_DEFINITIONS[server_key]
     merged_env = {**os.environ, **(env or {})}
+    merged_env["PATH"] = _resolve_path()
 
     process = await asyncio.create_subprocess_exec(
         definition.command, *definition.args,

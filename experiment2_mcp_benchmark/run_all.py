@@ -133,7 +133,6 @@ async def main():
     console.print("[bold]Architectures:[/bold] Centralized ([blue]@1mcp/agent[/blue]), Federated ([blue]Bifrost[/blue] Code Mode), Multi-Agent (direct), MCP Mediator, Intent-Driven")
     console.print()
 
-    client, _model_name = select_provider()
     client, model_name = select_provider()
 
     try:
@@ -162,7 +161,6 @@ async def main():
 
     for name, ArchClass in architectures:
         separator(f"RUNNING: {name}")
-    for name, ArchClass, _ in ARCHITECTURES:
         console.print(f"\n[bold yellow]Running {name}...[/bold yellow]")
         orchestrator = ArchClass(client)
         try:

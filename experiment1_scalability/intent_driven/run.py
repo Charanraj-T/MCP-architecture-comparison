@@ -132,7 +132,8 @@ class IntentDrivenOrchestrator:
         plan_steps = plan_data["plan"]
         domains_used = set(s.get("domain", "") for s in plan_steps)
         active_tool_names = self._get_tools_for_domains(domains_used)
-        metrics.tool_schema_tokens = self.registry.schema_tokens(active_tool_names)
+        # Intent-Driven only loads domain descriptions (~75 tokens), NOT full tool schemas
+        metrics.tool_schema_tokens = self._count_tokens(DOMAIN_DESC)
         metrics.tools_exposed = len(active_tool_names)
         metrics.mcps_activated = sum(1 for m in self.mcps if m["domain"] in domains_used)
 
