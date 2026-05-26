@@ -225,13 +225,6 @@ async def select_model_configs():
         in2, out2 = MODEL_PRICING.get(model2, (0.10, 0.40))
         configs.append((client2, model2, in2, out2))
 
-    add = input("Add a third model? (y/N): ").strip().lower()
-    if add == "y":
-        console.print("[bold]Select model #3:[/bold]")
-        client3, model3 = select_provider()
-        in3, out3 = MODEL_PRICING.get(model3, (0.10, 0.40))
-        configs.append((client3, model3, in3, out3))
-
     return configs
 
 
@@ -302,33 +295,11 @@ def print_per_workflow_table(all_metrics, mcp_count, workflow_name, model_name=N
 def print_summary_table(all_metrics, mcp_count, model_name=None):
     filtered = _filter_metrics(all_metrics, model_name=model_name, mcp_count=mcp_count)
     arch_keys = sorted(set(m.architecture_name for m in filtered))
-    all_wf_keys = sorted(set(m.workflow_name for m in filtered))
-    
-    # Filter out workflows where ANY architecture has used=0
-    clean_wf_keys = []
-    excluded_workflows = []
-    for wf in all_wf_keys:
-        has_zero = False
-        for arch in arch_keys:
-            matches = [m for m in filtered if m.architecture_name == arch and m.workflow_name == wf]
-            if matches and matches[0].tools_used == 0:
-                has_zero = True
-                break
-        if has_zero:
-            excluded_workflows.append(wf)
-        else:
-            clean_wf_keys.append(wf)
-    
-    wf_keys = clean_wf_keys
+    wf_keys = sorted(set(m.workflow_name for m in filtered))
     model_tag = f"  |  Model: {model_name}" if model_name else ""
-    
-    # Print exclusion notice
-    if excluded_workflows:
-        console.print(f"[yellow]⚠ Note: Excluded {len(excluded_workflows)} workflow(s) with used=0: {', '.join(excluded_workflows)}[/yellow]")
-        console.print()
 
     table = Table(
-        title=f"EXECUTIVE SUMMARY — MCP Count: {mcp_count}{model_tag}  (Averaged Across {len(wf_keys)} Workflow{'s' if len(wf_keys) != 1 else ''})",
+        title=f"EXECUTIVE SUMMARY — MCP Count: {mcp_count}{model_tag}  (Averaged Across All Workflows)",
         box=box.HEAVY_EDGE,
         title_style="bold white on blue",
         header_style="bold white",

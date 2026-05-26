@@ -5,6 +5,7 @@ from pathlib import Path
 import tiktoken
 from common import LMStudioClient
 from common_tools import ToolRegistry
+from common_tools.parser import parse_tool_calls
 from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
@@ -23,17 +24,6 @@ class CentralizedOrchestrator:
 
     def _count_tokens(self, text: str) -> int:
         return len(self._enc.encode(text))
-    
-    def _parse_tool_arguments(self, arguments) -> dict:
-        """Parse tool arguments which may be string or dict."""
-        if isinstance(arguments, dict):
-            return arguments
-        if isinstance(arguments, str):
-            try:
-                return json.loads(arguments)
-            except json.JSONDecodeError:
-                return {}
-        return {}
 
     def _select_tools_for_budget(self, tool_names: list[str], fixed_overhead: int) -> list[str]:
         system_prefix = (
@@ -98,14 +88,16 @@ class CentralizedOrchestrator:
         metrics.mcps_activated = len(selected_names) // 3 + (1 if len(selected_names) % 3 else 0)
 
         metrics.agent_hops = 0
-        
-        # Convert tools to OpenAI format for native tool calling
-        openai_tools = self.registry.tools_to_openai_format(selected_names)
-        
+        tool_text = self.registry.tool_schema_text(selected_names)
+
         system = (
-            "You are an AI assistant with access to tools. "
-            "Use the available tools to help answer the user's question. "
-            "Call tools as needed and provide a final answer based on the results."
+            "You are an AI assistant with access to tools.\n\n"
+            "To call a tool, output a JSON code block:\n"
+            '```json\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n```\n\n'
+            "Example:\n"
+            '```json\n{"name": "read_file", "arguments": {"path": "/etc/hosts"}}\n```\n\n'
+            "After all tool calls, output: FINAL_ANSWER: your final answer\n\n"
+            "Available tools:\n" + tool_text
         )
 
         messages = [
@@ -126,7 +118,7 @@ class CentralizedOrchestrator:
                 )
                 break
 
-            response = await self.client.chat(messages, temperature=0.1, tools=openai_tools, tool_choice="auto")
+            response = await self.client.chat(messages, temperature=0.1)
             if response.error:
                 warnings.warn(f"Centralized MCP: model error at turn {turn} ({response.error})", ResourceWarning)
                 break
@@ -137,38 +129,20 @@ class CentralizedOrchestrator:
             metrics.total_tokens += response.usage.total_tokens
             metrics.agent_hops += 1
 
-            # Use native tool_calls from response
-            calls = response.tool_calls or []
             content = response.content or ""
+            calls = parse_tool_calls(content)
 
             if calls:
-                # Add assistant message with tool calls
-                assistant_message = {"role": "assistant", "content": content or ""}
-                if calls:
-                    assistant_message["tool_calls"] = [
-                        {"id": f"call_{i}", "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}}
-                        for i, c in enumerate(calls)
-                    ]
-                messages.append(assistant_message)
-                
-                # Execute tools and collect results
                 results = []
                 for tc in calls:
                     name = tc.get("name", "")
-                    args = self._parse_tool_arguments(tc.get("arguments", {}))
-                    if not name:
-                        continue
+                    args = tc.get("arguments", {})
                     result = self.registry.mock_call(name, **args)
                     tools_used.add(name)
-                    results.append({"tool_name": name, "result": result})
-                
-                # Add tool results as user message
-                messages.append({
-                    "role": "user",
-                    "content": f"Tool results:\n{json.dumps(results, indent=2)}\n\nContinue or provide final answer."
-                })
+                    results.append({name: result})
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": f"Tool results:\n{json.dumps(results, indent=2)}\n\nContinue or provide FINAL_ANSWER."})
             else:
-                # No tools called, add assistant message and break
                 messages.append({"role": "assistant", "content": content})
                 break
 

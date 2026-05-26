@@ -49,21 +49,3 @@ class ToolRegistry:
         if tool is None:
             return {"error": f"unknown tool: {tool_name}"}
         return dict(tool["mock_response"])
-
-    def tools_to_openai_format(self, tool_names: list[str] = None) -> list[dict]:
-        """Convert tools to OpenAI function calling format."""
-        tools = self._tools
-        if tool_names is not None:
-            tools = [t for t in self._tools if t["name"] in tool_names]
-        
-        result = []
-        for t in tools:
-            result.append({
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "parameters": t["input_schema"]
-                }
-            })
-        return result
