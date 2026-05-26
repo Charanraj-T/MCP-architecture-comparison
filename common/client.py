@@ -101,6 +101,7 @@ class LLMResponse:
     latency_ms: float = 0.0
     raw: dict = field(default_factory=dict)
     error: str = ""
+    tool_calls: list = field(default_factory=list)
 
 
 class OpenAIClient:
@@ -144,20 +145,26 @@ class OpenAIClient:
         temperature: float = 0.1,
         max_tokens: int = 4096,
         request_timeout: int = 120,
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
         **kwargs,
     ) -> LLMResponse:
         await self._ensure_client()
         messages = self._inject_no_think(messages)
         start = time.monotonic()
         try:
+            api_kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                **kwargs,
+            }
+            if tools:
+                api_kwargs["tools"] = tools
+                api_kwargs["tool_choice"] = tool_choice
             response = await asyncio.wait_for(
-                self._client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    **kwargs,
-                ),
+                self._client.chat.completions.create(**api_kwargs),
                 timeout=request_timeout,
             )
         except asyncio.TimeoutError:
@@ -178,11 +185,33 @@ class OpenAIClient:
             reasoning_tokens=reasoning,
             total_tokens=usage.total_tokens if usage else 0,
         )
+        
+        tool_calls = []
+        message = response.choices[0].message
+        if hasattr(message, "tool_calls") and message.tool_calls:
+            for tc in message.tool_calls:
+                try:
+                    name = tc.function.name
+                    args_raw = tc.function.arguments
+                    # Parse arguments if they're a string, otherwise use as-is
+                    if isinstance(args_raw, str):
+                        try:
+                            args = json.loads(args_raw)
+                        except json.JSONDecodeError:
+                            args = {}
+                    else:
+                        args = args_raw if isinstance(args_raw, dict) else {}
+                    tool_calls.append({"name": name, "arguments": args})
+                except (AttributeError, TypeError) as e:
+                    # Skip malformed tool calls
+                    pass
+        
         return LLMResponse(
-            content=response.choices[0].message.content or "",
+            content=message.content or "",
             usage=token_usage,
             latency_ms=elapsed,
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
+            tool_calls=tool_calls,
         )
 
 
