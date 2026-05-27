@@ -62,5 +62,12 @@ def _extract_json_objects(text: str) -> list[dict]:
     return results
 
 
-def parse_tool_calls(text: str) -> list[dict]:
+def parse_tool_calls(text) -> list[dict]:
+    """Parse tool calls from text. Ensures text is a string first."""
+    # Defensive: ensure text is always a string
+    if isinstance(text, list):
+        text = "".join(str(item) for item in text)
+    elif not isinstance(text, str):
+        text = str(text)
+    
     return _extract_json_objects(text)

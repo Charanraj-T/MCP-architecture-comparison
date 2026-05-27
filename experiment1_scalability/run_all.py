@@ -25,6 +25,21 @@ from intent_driven.run import IntentDrivenOrchestrator
 
 from workflows import WORKFLOWS
 
+FULL_AUDIT_NAME = "Full System Audit"
+
+
+def _filter_workflows(wf_keys, filtered):
+    """Exclude Full System Audit from wf_keys if any arch had tools_used==0 for it."""
+    if FULL_AUDIT_NAME not in wf_keys:
+        return list(wf_keys)
+    for m in filtered:
+        if m.workflow_name == FULL_AUDIT_NAME and m.tools_truncated != -1 and m.tools_used == 0:
+            remaining = [w for w in wf_keys if w != FULL_AUDIT_NAME]
+            if remaining:
+                return remaining
+    return list(wf_keys)
+
+
 ARCHITECTURES = [
     ("Centralized MCP", CentralizedOrchestrator),
     ("Federated MCP", FederatedOrchestrator),
@@ -37,6 +52,7 @@ MODEL_PRICING = {
     "mistralai/mistral-small-3.1-24b-instruct": (0.06, 0.10),
     "google/gemini-2.0-flash-001": (0.10, 0.40),
     "gpt-4o-mini": (0.15, 0.60),
+    "Ministral-3B": (0.04, 0.04),
 }
 
 
@@ -101,10 +117,13 @@ def print_executive_summary(all_metrics, model_configs):
     """CTO-facing conclusion: which architecture wins and why."""
     mcp_counts = sorted(set(m.mcps_total for m in all_metrics))
     arch_keys = sorted(set(m.architecture_name for m in all_metrics))
-    wf_keys = sorted(set(m.workflow_name for m in all_metrics))
+    wf_keys_all = sorted(set(m.workflow_name for m in all_metrics))
     model_names = [mc[1] for mc in model_configs]
 
     max_mcp = mcp_counts[-1] if mcp_counts else 50
+    # Determine workflow set at MCP-count level (across all models) at max_mcp
+    all_at_max_mcp = [m for m in all_metrics if m.mcps_total == max_mcp]
+    wf_keys = _filter_workflows(wf_keys_all, all_at_max_mcp)
 
     # Per-model best architecture
     model_best = {}
@@ -295,11 +314,13 @@ def print_per_workflow_table(all_metrics, mcp_count, workflow_name, model_name=N
 def print_summary_table(all_metrics, mcp_count, model_name=None):
     filtered = _filter_metrics(all_metrics, model_name=model_name, mcp_count=mcp_count)
     arch_keys = sorted(set(m.architecture_name for m in filtered))
-    wf_keys = sorted(set(m.workflow_name for m in filtered))
+    # Determine workflow set at MCP-count level (across all models)
+    all_at_mcp = [m for m in all_metrics if m.mcps_total == mcp_count]
+    wf_keys = _filter_workflows(sorted(set(m.workflow_name for m in all_at_mcp)), all_at_mcp)
     model_tag = f"  |  Model: {model_name}" if model_name else ""
 
     table = Table(
-        title=f"EXECUTIVE SUMMARY — MCP Count: {mcp_count}{model_tag}  (Averaged Across All Workflows)",
+        title=f"EXECUTIVE SUMMARY — MCP Count: {mcp_count}{model_tag}  (Averaged Across {len(wf_keys)} Workflows)",
         box=box.HEAVY_EDGE,
         title_style="bold white on blue",
         header_style="bold white",
@@ -460,15 +481,21 @@ def _why_text(arch, mcp_count, avg_total=0, avg_schema=0, avg_hops=0, avg_used=0
 def print_architecture_analysis(all_metrics, mcp_count, model_name=None):
     filtered = _filter_metrics(all_metrics, model_name=model_name, mcp_count=mcp_count)
     arch_keys = sorted(set(m.architecture_name for m in filtered))
-    wf_keys = sorted(set(m.workflow_name for m in filtered))
     model_tag = f"  |  Model: {model_name}" if model_name else ""
+
+    # Determine exclusion at MCP-count level (across all models)
+    all_at_mcp = [m for m in all_metrics if m.mcps_total == mcp_count]
+    exclude_full_audit = any(
+        m.workflow_name == FULL_AUDIT_NAME and m.tools_truncated != -1 and m.tools_used == 0
+        for m in all_at_mcp
+    )
 
     separator(f"TOKEN COST ANALYSIS — WHY EACH ARCHITECTURE COSTS WHAT IT DOES{model_tag}")
 
     # Precompute Centralized average for ratio comparisons
     centralized_avg = 0
     cent_matches = [m for m in filtered if m.architecture_name == "Centralized MCP"]
-    cent_valid = [m2 for m2 in cent_matches if m2.tools_truncated != -1]
+    cent_valid = [m2 for m2 in cent_matches if m2.tools_truncated != -1 and not (exclude_full_audit and m2.workflow_name == FULL_AUDIT_NAME)]
     if cent_valid:
         centralized_avg = sum(m2.total_tokens for m2 in cent_valid) / len(cent_valid)
 
@@ -477,7 +504,7 @@ def print_architecture_analysis(all_metrics, mcp_count, model_name=None):
         if not matches:
             continue
 
-        valid = [m2 for m2 in matches if m2.tools_truncated != -1]
+        valid = [m2 for m2 in matches if m2.tools_truncated != -1 and not (exclude_full_audit and m2.workflow_name == FULL_AUDIT_NAME)]
         denom = max(len(valid), 1)
 
         avg_tokens = sum(m2.total_tokens for m2 in valid) / denom
@@ -512,7 +539,8 @@ def print_cross_model_comparison(all_metrics, mcp_count, model_configs):
     """Side-by-side comparison of all architectures across models at a given MCP count."""
     model_names = [mc[1] for mc in model_configs]
     arch_keys = sorted(set(m.architecture_name for m in all_metrics if m.mcps_total == mcp_count))
-    wf_keys = sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count))
+    filtered_for_mcp = [m for m in all_metrics if m.mcps_total == mcp_count]
+    wf_keys = _filter_workflows(sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count)), filtered_for_mcp)
     multi = len(model_names) > 1
 
     separator(f"CROSS-MODEL COMPARISON — MCP Count: {mcp_count}")
@@ -598,8 +626,13 @@ def print_cross_model_comparison(all_metrics, mcp_count, model_configs):
 
 def _avg_for_model(all_metrics, model_name, mcp_count, arch, key):
     """Average a metric for a specific model × architecture × MCP count."""
+    all_at_mcp = [m for m in all_metrics if m.mcps_total == mcp_count]
+    wf_keys = _filter_workflows(
+        sorted(set(m.workflow_name for m in all_at_mcp)),
+        all_at_mcp
+    )
     vals = []
-    for wf in sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count)):
+    for wf in wf_keys:
         matches = [m for m in all_metrics if m.model_name == model_name and m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == wf]
         if matches and matches[0].tools_truncated != -1:
             vals.append(getattr(matches[0], key, 0))
@@ -611,15 +644,20 @@ def print_cross_count_trend(all_metrics, model_name=None):
     filtered = _filter_metrics(all_metrics, model_name=model_name)
     mcp_counts = sorted(set(m.mcps_total for m in filtered))
     arch_keys = sorted(set(m.architecture_name for m in filtered))
-    wf_keys = sorted(set(m.workflow_name for m in filtered))
 
     if len(mcp_counts) < 2:
         return
 
     def _avg_count(arch, key, count):
+        count_data = [m for m in filtered if m.mcps_total == count]
+        all_at_count = [m for m in all_metrics if m.mcps_total == count]
+        count_wfs = _filter_workflows(
+            sorted(set(m.workflow_name for m in all_at_count)),
+            all_at_count
+        )
         vals = []
-        for wf in wf_keys:
-            matches = [m for m in filtered if m.mcps_total == count and m.architecture_name == arch and m.workflow_name == wf]
+        for wf in count_wfs:
+            matches = [m for m in count_data if m.architecture_name == arch and m.workflow_name == wf]
             if matches and matches[0].tools_truncated != -1:
                 vals.append(getattr(matches[0], key, 0))
         return sum(vals) / len(vals) if vals else 0
@@ -753,7 +791,7 @@ async def main():
 
     for client, model_name, in_rate, out_rate in model_configs:
         budget = get_token_budget(model_name)
-        label = f"  [bold cyan][Model: {model_name}][/bold cyan]"
+        label = f"  [bold cyan][Model: {model_name} | Budget: {budget:,} tokens][/bold cyan]"
         console.print(f"\n{label}")
         for mcp_count in mcp_counts:
             separator(f"MCP COUNT: {mcp_count}")

@@ -54,6 +54,8 @@ MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "gpt-4o": 131072,
     "openai/gpt-4o": 128000,
     "openai/gpt-4o-mini": 128000,
+    "gpt-5.3-codex": 128000,
+    "claude-sonnet-4-5": 200000,
 }
 
 
@@ -69,6 +71,8 @@ PROVIDERS = {
 
 
 def _get_env_config():
+    
+    # Check for generic LLM config
     if os.environ.get("LLM_BASE_URL"):
         api_key = (
             os.environ.get("LLM_API_KEY")
@@ -244,25 +248,38 @@ def select_provider():
 
     env_config = _get_env_config()
     if env_config:
-        api_key = env_config["api_key"] or "not-needed"
-        console.print(f"[green]LLM from env: {env_config['base_url']} / {env_config['model']}[/green]")
-        return OpenAIClient(
-            base_url=env_config["base_url"],
-            model=env_config["model"],
-            api_key=api_key,
-            inject_no_think=env_config["inject_no_think"],
-        ), env_config["model"]
+        provider_info = env_config.get("provider", "generic")
+        model = env_config.get("model", "unknown")
+        
+        # Handle Azure clients (LangChain-based)
+        if "client" in env_config and provider_info.startswith("azure"):
+            console.print(f"[green]LLM from env ({provider_info}): {model}[/green]")
+            return env_config["client"], model
+        
+        # Handle generic OpenAI-compatible clients
+        api_key = env_config.get("api_key") or "not-needed"
+        base_url = env_config.get("base_url", "")
+        if base_url:
+            console.print(f"[green]LLM from env ({provider_info}): {base_url} / {model}[/green]")
+            return OpenAIClient(
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                inject_no_think=env_config.get("inject_no_think", False),
+            ), model
 
     console.print("[bold]Select provider:[/bold]")
     console.print("  [L] Local LM Studio  (qwen/qwen3-8b, http://localhost:1234/v1)")
     console.print("  [O] Local Ollama     (auto-detect models, http://localhost:11434/v1)")
+    console.print("  [A] Azure OpenAI     (needs AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)")
+    console.print("  [B] Azure Anthropic  (needs AZURE_ANTHROPIC_API_KEY + AZURE_ANTHROPIC_ENDPOINT)")
     console.print("  [G] Groq API         (llama-3.3-70b-versatile, needs GROQ_API_KEY)")
     console.print("  [R] OpenRouter       (auto model selection, needs OPENROUTER_API_KEY)")
     console.print("  [H] GitHub Models    (gpt-4o-mini, needs GITHUB_TOKEN)")
     console.print("  [C] Cloudflare AI    (free tier, needs CF_API_KEY + CF_ACCOUNT_ID)")
     console.print("  [M] Custom URL       (any OpenAI-compatible endpoint)")
 
-    choice = input("Choice [L/O/G/R/H/C/M]: ").strip().lower()
+    choice = input("Choice [L/O/A/B/G/R/H/C/M]: ").strip().lower()
 
     if choice == "o":
         models = _discover_ollama_models()
@@ -279,6 +296,59 @@ def select_provider():
         )
         console.print(f"[green]Ollama: {model}[/green]\n")
         return client, model
+
+    if choice == "a":
+        from common.langchain_clients import LangChainAzureOpenAIClient
+        
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.3-codex")
+        
+        # Prompt if not in env, or always prompt when called again with addon model
+        if not api_key or not endpoint:
+            console.print("[bold]Azure OpenAI Configuration:[/bold]")
+            endpoint = input("AZURE_OPENAI_ENDPOINT (e.g., https://xxxx.openai.azure.com): ").strip() or endpoint
+            api_key = input("AZURE_OPENAI_API_KEY: ").strip() or api_key
+        deployment = input(f"AZURE_OPENAI_DEPLOYMENT_NAME (e.g., gpt-5.3-codex, Ministral-3B) [{deployment}]: ").strip() or deployment
+        
+        if not api_key or not endpoint:
+            console.print("[red]Error: Azure OpenAI credentials required[/red]")
+            sys.exit(1)
+        
+        # Always update env so the fresh client picks up the right deployment
+        os.environ["AZURE_OPENAI_API_KEY"] = api_key or ""
+        os.environ["AZURE_OPENAI_ENDPOINT"] = endpoint or ""
+        os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = deployment
+        
+        client = LangChainAzureOpenAIClient()
+        console.print(f"[green]Azure OpenAI: {deployment}[/green]\n")
+        return client, deployment
+
+    if choice == "b":
+        from common.langchain_clients import LangChainAzureAnthropicClient
+        
+        api_key = os.environ.get("AZURE_ANTHROPIC_API_KEY")
+        endpoint = os.environ.get("AZURE_ANTHROPIC_ENDPOINT")
+        deployment = os.environ.get("AZURE_ANTHROPIC_DEPLOYMENT_NAME", "claude-sonnet-4-5")
+        
+        # Prompt if not in env
+        if not api_key or not endpoint:
+            console.print("[bold]Azure Anthropic Configuration:[/bold]")
+            endpoint = input("AZURE_ANTHROPIC_ENDPOINT (e.g., https://xxxx.services.ai.azure.com): ").strip() or endpoint
+            api_key = input("AZURE_ANTHROPIC_API_KEY: ").strip() or api_key
+        deployment = input(f"AZURE_ANTHROPIC_DEPLOYMENT_NAME [{deployment}]: ").strip() or deployment
+        
+        if not api_key or not endpoint:
+            console.print("[red]Error: Azure Anthropic credentials required[/red]")
+            sys.exit(1)
+        
+        os.environ["AZURE_ANTHROPIC_API_KEY"] = api_key or ""
+        os.environ["AZURE_ANTHROPIC_ENDPOINT"] = endpoint or ""
+        os.environ["AZURE_ANTHROPIC_DEPLOYMENT_NAME"] = deployment
+        
+        client = LangChainAzureAnthropicClient()
+        console.print(f"[green]Azure Anthropic: {deployment}[/green]\n")
+        return client, deployment
 
     if choice == "g":
         api_key = os.environ.get("GROQ_API_KEY")
@@ -378,8 +448,43 @@ def select_provider():
 
 
 def get_token_budget(model_name: str, safety_margin: int = 4000) -> int:
-    limit = MODEL_CONTEXT_LIMITS.get(model_name, 40960)
-    return limit - safety_margin
+    # Map Azure deployment names to their actual context limits
+    azure_mappings = {
+        "gpt-5.3-codex": 128000,
+        "gpt-4": 8192,
+        "gpt-4-turbo": 128000,
+        "gpt-4-turbo-preview": 128000,
+        "gpt-35-turbo": 4096,
+        "claude-sonnet-4-5": 200000,
+        "claude-opus": 200000,
+        "claude-haiku": 100000,
+        "Ministral-3B": 128000,
+    }
+    
+    # Check exact match in MODEL_CONTEXT_LIMITS first
+    if model_name in MODEL_CONTEXT_LIMITS:
+        limit = MODEL_CONTEXT_LIMITS[model_name]
+    # Check Azure mappings
+    elif model_name in azure_mappings:
+        limit = azure_mappings[model_name]
+    # Check if model_name contains common patterns
+    elif "gpt-4-turbo" in model_name.lower() or "gpt4-turbo" in model_name.lower():
+        limit = 128000
+    elif "gpt-4" in model_name.lower() or "gpt4" in model_name.lower():
+        limit = 8192
+    elif "gpt-35" in model_name.lower() or "gpt35" in model_name.lower():
+        limit = 4096
+    elif "claude-3-opus" in model_name.lower():
+        limit = 200000
+    elif "claude" in model_name.lower():
+        limit = 200000  # Default for Claude models
+    else:
+        # Default fallback
+        limit = 40960
+    
+    # Use 10% safety margin for large models, 20% for smaller ones
+    safety = int(limit * 0.1) if limit > 50000 else int(limit * 0.2)
+    return max(limit - safety, 20000)  # Ensure minimum budget
 
 
 def estimate_tokens_per_model(model_name: str, token_count: int) -> float:

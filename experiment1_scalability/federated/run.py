@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import warnings
@@ -12,6 +13,7 @@ from common_tools.parser import parse_tool_calls
 from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
+_CALL_TIMEOUT = 120
 
 
 
@@ -55,6 +57,16 @@ class FederatedOrchestrator:
             total += self._count_tokens(m.get("content", ""))
         return total + 500
 
+    async def _chat_with_timeout(self, messages, **kwargs):
+        try:
+            return await asyncio.wait_for(
+                self.client.chat(messages, **kwargs),
+                timeout=_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            from common import LLMResponse
+            return LLMResponse(content="", error="Timeout after 120s")
+
     async def run(self, workflow: dict) -> WorkflowMetrics:
         metrics = WorkflowMetrics(
             workflow_name=workflow["name"],
@@ -77,7 +89,7 @@ class FederatedOrchestrator:
         domains = None
         router_latency = 0.0
         for attempt in range(2):
-            router_response = await self.client.chat([{"role": "user", "content": router_prompt}], temperature=0.1)
+            router_response = await self._chat_with_timeout([{"role": "user", "content": router_prompt}], temperature=0.1)
             if router_response.error:
                 metrics.tools_truncated = -1
                 warnings.warn(f"Federated MCP SKIPPED for {workflow['name']}: router crashed ({router_response.error})", ResourceWarning)
@@ -187,7 +199,7 @@ class FederatedOrchestrator:
                 )
                 break
 
-            response = await self.client.chat(messages, temperature=0.1)
+            response = await self._chat_with_timeout(messages, temperature=0.1)
             if response.error:
                 warnings.warn(f"Federated MCP: model error at turn {turn} ({response.error})", ResourceWarning)
                 break

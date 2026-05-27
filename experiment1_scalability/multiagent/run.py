@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import warnings
@@ -9,6 +10,7 @@ from common_tools.parser import parse_tool_calls
 from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
+_CALL_TIMEOUT = 120
 
 SUPERVISOR_DECOMPOSE = (
     "You are a supervisor. Decompose this task into subtasks for these specialized agents:\n"
@@ -59,8 +61,18 @@ class MultiAgentOrchestrator:
             return True
         return False
 
+    async def _chat_with_timeout(self, messages, **kwargs):
+        try:
+            return await asyncio.wait_for(
+                self.client.chat(messages, **kwargs),
+                timeout=_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            from common import LLMResponse
+            return LLMResponse(content="", error="Timeout after 120s")
+
     async def _decompose(self, prompt: str) -> tuple[list[dict], dict]:
-        resp = await self.client.chat([{"role": "user", "content": SUPERVISOR_DECOMPOSE + prompt}], temperature=0.1)
+        resp = await self._chat_with_timeout([{"role": "user", "content": SUPERVISOR_DECOMPOSE + prompt}], temperature=0.1)
         usage = self._add_usage(self._empty_usage(), resp)
         content = resp.content or ""
         if resp.error:
@@ -101,7 +113,7 @@ class MultiAgentOrchestrator:
         hops = 0
 
         for turn in range(6):
-            resp = await self.client.chat(messages, temperature=0.1)
+            resp = await self._chat_with_timeout(messages, temperature=0.1)
             usage = self._add_usage(usage, resp)
             hops += 1
             content = resp.content or ""
@@ -188,7 +200,7 @@ class MultiAgentOrchestrator:
         for domain, answer, tools_used, usage, hops in worker_results:
             compile_prompt += f"<{domain}>:\n{answer}\n\n"
 
-        final_resp = await self.client.chat([{"role": "user", "content": compile_prompt}], temperature=0.3)
+        final_resp = await self._chat_with_timeout([{"role": "user", "content": compile_prompt}], temperature=0.3)
         metrics.agent_hops += 1
         if final_resp.error:
             metrics.latency_ms = round(decompose_usage["latency_ms"] + sum(u["latency_ms"] for _, _, _, u, _ in worker_results), 1)

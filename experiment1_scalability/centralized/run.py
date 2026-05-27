@@ -1,3 +1,4 @@
+import asyncio
 import json
 import warnings
 from pathlib import Path
@@ -9,6 +10,7 @@ from common_tools.parser import parse_tool_calls
 from metrics import WorkflowMetrics, JSONLogger
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
+_CALL_TIMEOUT = 120
 
 
 
@@ -55,6 +57,16 @@ class CentralizedOrchestrator:
         for m in messages:
             total += self._count_tokens(m.get("content", ""))
         return total + 500
+
+    async def _chat_with_timeout(self, messages, **kwargs):
+        try:
+            return await asyncio.wait_for(
+                self.client.chat(messages, **kwargs),
+                timeout=_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            from common import LLMResponse
+            return LLMResponse(content="", error="Timeout after 120s")
 
     async def run(self, workflow: dict) -> WorkflowMetrics:
         metrics = WorkflowMetrics(
@@ -118,7 +130,7 @@ class CentralizedOrchestrator:
                 )
                 break
 
-            response = await self.client.chat(messages, temperature=0.1)
+            response = await self._chat_with_timeout(messages, temperature=0.1)
             if response.error:
                 warnings.warn(f"Centralized MCP: model error at turn {turn} ({response.error})", ResourceWarning)
                 break
