@@ -3,10 +3,14 @@
 Eliminates ~70% code duplication across centralized, federated,
 intent_driven, mediator, and multiagent implementations.
 """
+from __future__ import annotations
+
 import asyncio
 import json
+import logging
 import warnings
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import tiktoken
 
@@ -18,7 +22,13 @@ from common import LLMResponse
 from metrics.token_tracker import WorkflowMetrics
 from common_tools.parser import parse_tool_calls
 
+if TYPE_CHECKING:
+    from common.client import OpenAIClient
+    from common_tools.registry import ToolRegistry
+
 _CALL_TIMEOUT = 120
+
+logger = logging.getLogger(__name__)
 
 
 class BaseOrchestrator(ABC):
@@ -29,20 +39,25 @@ class BaseOrchestrator(ABC):
 
     def __init__(
         self,
-        client,
-        registry,
+        client: OpenAIClient,
+        registry: ToolRegistry,
         mcps: list[dict],
         total_token_budget: int = 38000,
         mcp_count: int = 0,
-    ):
+    ) -> None:
         self.client = client
         self.registry = registry
         self.mcps = mcps
         self.total_token_budget = total_token_budget
         self.mcp_count = mcp_count
         self._enc = tiktoken.get_encoding("cl100k_base")
-        import logging
         self.logger = logging.getLogger(self.__class__.__name__)
+        logger.info(
+            "Initialized %s (budget=%d, mcps=%d)",
+            self.__class__.__name__,
+            total_token_budget,
+            mcp_count,
+        )
 
     # ── Token utilities ──────────────────────────────────────────
 
@@ -82,7 +97,8 @@ class BaseOrchestrator(ABC):
                 timeout=_CALL_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            return LLMResponse(content="", usage=WorkflowMetrics._empty_usage() if hasattr(WorkflowMetrics, '_empty_usage') else None, error="Timeout after 120s")
+            logger.warning("LLM call timed out after %ds", _CALL_TIMEOUT)
+            return LLMResponse(content="", usage=None, error="Timeout after 120s")
 
     # ── Usage accumulation ───────────────────────────────────────
 
@@ -105,12 +121,16 @@ class BaseOrchestrator(ABC):
         max_turns: int = 6,
     ) -> str:
         """Run the chat→parse→execute→respond loop. Returns final answer text."""
-        tools_used = set()
+        tools_used: set[str] = set()
         total_latency = 0.0
 
-        for _turn in range(max_turns):
+        for turn in range(max_turns):
             next_est = self._estimate_next_request_tokens(messages)
             if next_est > self.total_token_budget:
+                logger.warning(
+                    "Token budget exceeded (%d > %d) at turn %d, stopping",
+                    next_est, self.total_token_budget, turn,
+                )
                 warnings.warn(
                     f"Token budget exceeded ({next_est} > {self.total_token_budget}), stopping"
                 )
@@ -118,6 +138,7 @@ class BaseOrchestrator(ABC):
 
             response = await self.client.chat(messages, temperature=0.1)
             if response.error:
+                logger.warning("LLM error at turn %d: %s", turn, response.error)
                 warnings.warn(f"LLM error: {response.error}")
                 break
             total_latency += response.latency_ms
@@ -147,6 +168,10 @@ class BaseOrchestrator(ABC):
 
         metrics.tools_used = len(tools_used)
         metrics.latency_ms = total_latency
+        logger.debug(
+            "Tool loop complete: %d tools used, %.1fms latency, %d hops",
+            len(tools_used), total_latency, metrics.agent_hops,
+        )
         return messages[-1].get("content", "") if messages else ""
 
     # ── Lifecycle ────────────────────────────────────────────────

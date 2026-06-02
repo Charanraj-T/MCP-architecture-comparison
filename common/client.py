@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import asyncio
+import logging
 import os
 import sys
 import time
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderConfigurationError(ValueError):
@@ -103,7 +108,7 @@ class TokenUsage:
 @dataclass
 class LLMResponse:
     content: str
-    usage: TokenUsage
+    usage: TokenUsage | None
     latency_ms: float = 0.0
     raw: dict = field(default_factory=dict)
     error: str = ""
@@ -217,6 +222,7 @@ class OpenAIClient:
                 break  # success
             except asyncio.TimeoutError:
                 elapsed = (time.monotonic() - start) * 1000
+                logger.warning("LLM request timed out after %ds (retry %d/5)", request_timeout, retry + 1)
                 return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error="Request timed out")
             except Exception as e:
                 err_str = f"{type(e).__name__}: {e}"
@@ -224,12 +230,15 @@ class OpenAIClient:
                     delay = self._parse_retry_delay(err_str)
                     if delay <= 0:
                         delay = 10.0 * (retry + 1)
+                    logger.info("Rate limited (retry %d/5), waiting %.1fs", retry + 1, delay)
                     await asyncio.sleep(delay)
                     continue
                 elapsed = (time.monotonic() - start) * 1000
+                logger.error("LLM error: %s", err_str)
                 return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error=err_str)
         else:
             elapsed = (time.monotonic() - start) * 1000
+            logger.error("Rate limited after 5 retries: %s", err_str)
             return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error=f"Rate limited after 5 retries: {err_str}")
         elapsed = (time.monotonic() - start) * 1000
         if not response.choices:
