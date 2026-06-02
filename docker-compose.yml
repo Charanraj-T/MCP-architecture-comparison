@@ -1,0 +1,18 @@
+services:
+  test:
+    build: .
+    command: pytest tests/ -v --tb=short
+    volumes:
+      - .:/app
+
+  lint:
+    build: .
+    command: ruff check .
+    volumes:
+      - .:/app
+
+  typecheck:
+    build: .
+    command: mypy common/ --ignore-missing-imports
+    volumes:
+      - .:/app

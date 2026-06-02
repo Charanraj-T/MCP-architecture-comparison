@@ -62,6 +62,20 @@ def _filter_metrics(all_metrics, model_name=None, mcp_count=None):
     return result
 
 
+def _avg_metric(all_metrics, model_name, mcp_count, arch, workflow, key):
+    """Compute average of `key` across workflows for a given model/mcp/arch combo.
+    
+    Returns 0 if no valid (non-truncated) metrics found.
+    """
+    vals = []
+    for m in all_metrics:
+        if (m.model_name == model_name and m.mcps_total == mcp_count
+                and m.architecture_name == arch and m.workflow_name == workflow
+                and m.tools_truncated != -1):
+            vals.append(getattr(m, key, 0))
+    return sum(vals) / len(vals) if vals else 0
+
+
 def print_token_cost_methodology(model_configs):
     separator("TOKEN COST METHODOLOGY")
     models_line = "  • Models tested: " + ", ".join(f"[cyan]{m[1]}[/cyan] (${m[2]:.2f}/${m[3]:.2f} per 1M)" for m in model_configs)
