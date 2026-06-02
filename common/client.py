@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+class ProviderConfigurationError(ValueError):
+    """Raised when provider configuration is invalid or missing."""
+    pass
+
+
 MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "qwen/qwen3-8b": 32768,
     "llama-3.3-70b-versatile": 131072,
@@ -341,6 +346,9 @@ def select_provider():
     console.print("  [M] Custom URL       (any OpenAI-compatible endpoint)")
 
     choice = input("Choice [L/O/A/B/G/R/H/C/M]: ").strip().lower()
+    valid_choices = {"l", "o", "a", "b", "g", "r", "h", "c", "m"}
+    if choice not in valid_choices:
+        raise ProviderConfigurationError(f"Invalid choice '{choice}'. Valid options: {', '.join(sorted(valid_choices))}")
 
     if choice == "o":
         models = _discover_ollama_models()
@@ -374,8 +382,7 @@ def select_provider():
         deployment = input(f"AZURE_OPENAI_DEPLOYMENT_NAME (e.g., gpt-5.3-codex, Ministral-3B) [{deployment}]: ").strip() or deployment
         
         if not api_key or not endpoint:
-            console.print("[red]Error: Azure OpenAI credentials required[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("Azure OpenAI credentials required (AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)")
         
         # Store credentials on the client instance, not in os.environ
         os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = deployment
@@ -400,8 +407,7 @@ def select_provider():
         deployment = input(f"AZURE_ANTHROPIC_DEPLOYMENT_NAME [{deployment}]: ").strip() or deployment
         
         if not api_key or not endpoint:
-            console.print("[red]Error: Azure Anthropic credentials required[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("Azure Anthropic credentials required (AZURE_ANTHROPIC_API_KEY + AZURE_ANTHROPIC_ENDPOINT)")
         
         os.environ["AZURE_ANTHROPIC_DEPLOYMENT_NAME"] = deployment
         
@@ -412,8 +418,7 @@ def select_provider():
     if choice == "g":
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
-            console.print("[red]Error: GROQ_API_KEY not set in environment[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("GROQ_API_KEY not set in environment")
         model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
         client = OpenAIClient(
             base_url="https://api.groq.com/openai/v1",
@@ -427,8 +432,7 @@ def select_provider():
     if choice == "r":
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
-            console.print("[red]Error: OPENROUTER_API_KEY not set in environment[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("OPENROUTER_API_KEY not set in environment")
         console.print("[bold]Select OpenRouter model:[/bold]")
         console.print("  [1] google/gemini-2.0-flash-001        (free, 1M context)")
         console.print("  [2] meta-llama/llama-3.3-70b-instruct   (paid, but cheap)")
@@ -459,8 +463,7 @@ def select_provider():
     if choice == "h":
         api_key = os.environ.get("GITHUB_TOKEN")
         if not api_key:
-            console.print("[red]Error: GITHUB_TOKEN not set in environment[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("GITHUB_TOKEN not set in environment")
         model = os.environ.get("GH_MODEL", "gpt-4o-mini")
         client = OpenAIClient(
             base_url="https://models.inference.ai.azure.com",
@@ -475,8 +478,7 @@ def select_provider():
         account_id = os.environ.get("CF_ACCOUNT_ID")
         api_key = os.environ.get("CF_API_KEY")
         if not account_id or not api_key:
-            console.print("[red]Error: CF_ACCOUNT_ID and CF_API_KEY must be set[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("CF_ACCOUNT_ID and CF_API_KEY must be set")
         model = os.environ.get("CF_MODEL", "@cf/meta/llama-3.2-3b-instruct")
         client = OpenAIClient(
             base_url=f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
@@ -492,12 +494,10 @@ def select_provider():
         base_url = input("Base URL (e.g. http://localhost:1234/v1): ").strip()
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https"):
-            console.print("[red]Error: URL must start with http:// or https://[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("URL must start with http:// or https://")
         model = input("Model name: ").strip()
         if not model:
-            console.print("[red]Error: Model name is required[/red]")
-            sys.exit(1)
+            raise ProviderConfigurationError("Model name is required")
         from getpass import getpass
         api_key = getpass("API key (leave blank if none): ").strip()
         inject = input("Inject /no_think? (y/N): ").strip().lower() == "y"

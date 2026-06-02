@@ -623,22 +623,12 @@ def print_cross_model_comparison(all_metrics, mcp_count, model_configs):
         filtered = _filter_metrics(all_metrics, model_name=mn, mcp_count=mcp_count)
         arch_keys_local = sorted(set(m.architecture_name for m in filtered))
         if arch_keys_local:
-            avg_used = _avg_for_model(all_metrics, mn, mcp_count, arch_keys_local[0], "tools_used")
+            avg_used = _avg_metric(all_metrics, mn, mcp_count, arch_keys_local[0], wf_keys_local[0], "tools_used") if wf_keys_local else 0
             if avg_used == 0:
                 console.print(
                     f"  [yellow]⚠ [{mn}] Centralized shows 0 tools used — the LLM responded with text only, "
                     f"never output TOOL_CALL:.[/yellow]\n"
                 )
-
-
-def _avg_for_model(all_metrics, model_name, mcp_count, arch, key):
-    """Average a metric for a specific model × architecture × MCP count."""
-    vals = []
-    for wf in sorted(set(m.workflow_name for m in all_metrics if m.mcps_total == mcp_count)):
-        matches = [m for m in all_metrics if m.model_name == model_name and m.mcps_total == mcp_count and m.architecture_name == arch and m.workflow_name == wf]
-        if matches and matches[0].tools_truncated != -1:
-            vals.append(getattr(matches[0], key, 0))
-    return sum(vals) / len(vals) if vals else 0
 
 
 def print_cross_count_trend(all_metrics, model_name=None):

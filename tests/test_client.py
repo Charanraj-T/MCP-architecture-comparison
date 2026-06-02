@@ -13,6 +13,7 @@ from common.client import (
     TokenUsage,
     LLMResponse,
     get_token_budget,
+    ProviderConfigurationError,
     MODEL_CONTEXT_LIMITS,
 )
 
@@ -131,3 +132,21 @@ class TestOpenAIClient:
     def test_rate_limit_window_initialized(self):
         client = OpenAIClient()
         assert isinstance(OpenAIClient._rate_limit_window, list)
+
+
+class TestProviderConfigurationError:
+    """Test ProviderConfigurationError exception."""
+
+    def test_is_value_error(self):
+        """Should be a subclass of ValueError for easy catching."""
+        assert issubclass(ProviderConfigurationError, ValueError)
+
+    def test_can_be_caught_as_value_error(self):
+        """Catch blocks for ValueError should also catch this."""
+        with pytest.raises(ValueError):
+            raise ProviderConfigurationError("test error")
+
+    def test_preserves_message(self):
+        """Error message should be preserved."""
+        err = ProviderConfigurationError("missing API key")
+        assert str(err) == "missing API key"
