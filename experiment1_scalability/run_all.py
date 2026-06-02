@@ -19,7 +19,6 @@ from metrics import TokenTracker
 
 from centralized.run import CentralizedOrchestrator
 from federated.run import FederatedOrchestrator
-from multiagent.run import MultiAgentOrchestrator
 from mediator.run import MediatorOrchestrator
 from intent_driven.run import IntentDrivenOrchestrator
 
@@ -144,17 +143,39 @@ def print_executive_summary(all_metrics, model_configs):
     else:
         summary += "Rankings change between models — validate on your target model.\n"
 
+    # Compute data-driven insights instead of hardcoded narrative
+    intent_totals = []
+    centralized_totals = []
+    for m in all_metrics:
+        if m.tools_truncated == -1:
+            continue
+        if m.architecture_name == "Intent-Driven":
+            intent_totals.append(m.total_tokens)
+        elif m.architecture_name == "Centralized MCP":
+            centralized_totals.append(m.total_tokens)
+
+    avg_intent = sum(intent_totals) / len(intent_totals) if intent_totals else 0
+    avg_centralized = sum(centralized_totals) / len(centralized_totals) if centralized_totals else 1
+
+    # Find the MCP count where Centralized first exceeds budget
+    skip_threshold = "N/A"
+    for mc in sorted(mcp_counts):
+        centralized_at_mc = [m for m in all_metrics if m.architecture_name == "Centralized MCP" and m.mcps_total == mc and m.tools_truncated == -1]
+        if len(centralized_at_mc) < len(wf_keys):
+            skip_threshold = f"{mc} MCPs"
+            break
+
     summary += (
-        f"\n[bold]Key Finding:[/bold] Intent-Driven avoids loading tool schemas into LLM context. "
-        f"Total cost stays flat (~2,500 tokens) regardless of MCP count.\n\n"
+        f"\n[bold]Key Finding:[/bold] Intent-Driven averages {avg_intent:,.0f} tokens across all runs, "
+        f"vs {avg_centralized:,.0f} for Centralized ({avg_intent/max(avg_centralized,1):.1f}x ratio).\n\n"
         f"[bold]Edge Cases & Risks:[/bold]\n"
-        f"    • Centralized MCP is fine for <20 MCPs when simplicity matters\n"
+        f"    • Centralized MCP starts exceeding budget at {skip_threshold} — schema tokens grow linearly\n"
         f"    • Mediator works well if tool schemas fit in context and you need fixed-cost execution\n"
         f"    • Federated router degrades at higher MCP counts — routing decisions become unreliable\n"
         f"    • Intent-Driven requires LLM to output valid structured JSON; weaker models may fail\n\n"
-        f"[bold]Bottom Line:[/bold] For organizations scaling beyond 20 MCPs, Intent-Driven is "
-        f"the only architecture that avoids context-window overflow. Centralized and Mediator "
-        f"hit linear schema-cost walls. Federated holds promise but routing reliability must improve."
+        f"[bold]Bottom Line:[/bold] Intent-Driven provides the flattest cost curve as MCP count grows. "
+        f"Centralized and Mediator hit linear schema-cost walls. Federated holds promise but routing "
+        f"reliability must improve."
     )
     panel = Panel(summary, border_style="green", title="[bold white]CTO EXECUTIVE SUMMARY[/bold white]", title_align="left")
     console.print()
@@ -771,7 +792,28 @@ async def main():
                 orch = ArchClass(client, registry, mcps, total_token_budget=budget, mcp_count=mcp_count)
 
                 for wf in WORKFLOWS:
-                    metrics = await orch.run(wf)
+                    try:
+                        metrics = await asyncio.wait_for(orch.run(wf), timeout=300)
+                    except asyncio.TimeoutError:
+                        console.print(f"    {wf['name'][:30]:30s} [red]TIMEOUT[/red] (exceeded 300s)")
+                        from metrics.token_tracker import WorkflowMetrics
+                        metrics = WorkflowMetrics(
+                            workflow_name=wf["name"],
+                            architecture_name=arch_name,
+                            model_name=model_name,
+                            mcps_total=mcp_count,
+                        )
+                        metrics.tools_truncated = -1
+                    except Exception as e:
+                        console.print(f"    {wf['name'][:30]:30s} [red]ERROR[/red] {type(e).__name__}: {e}")
+                        from metrics.token_tracker import WorkflowMetrics
+                        metrics = WorkflowMetrics(
+                            workflow_name=wf["name"],
+                            architecture_name=arch_name,
+                            model_name=model_name,
+                            mcps_total=mcp_count,
+                        )
+                        metrics.tools_truncated = -1
                     metrics.model_name = model_name
                     tracker.metrics.append(metrics)
 
@@ -812,8 +854,29 @@ async def main():
 
     os.makedirs("results", exist_ok=True)
     results = tracker.get_results()
+
+    # Add metadata envelope for reproducibility
+    import uuid
+    import subprocess as _sp
+    try:
+        git_hash = _sp.check_output(["git", "rev-parse", "HEAD"], stderr=_sp.DEVNULL).decode().strip()
+    except Exception:
+        git_hash = "unknown"
+
+    envelope = {
+        "schema_version": "1.0",
+        "run_id": str(uuid.uuid4()),
+        "timestamp": datetime.now().isoformat(),
+        "git_hash": git_hash,
+        "models": [mc[1] for mc in model_configs],
+        "mcp_counts": mcp_counts,
+        "architectures": [name for name, _ in ARCHITECTURES],
+        "workflows": [wf["name"] for wf in WORKFLOWS],
+        "results": results,
+    }
+
     with open("results/scalability_results.json", "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(envelope, f, indent=2)
     console.print(f"[dim]Results saved to results/scalability_results.json[/dim]")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

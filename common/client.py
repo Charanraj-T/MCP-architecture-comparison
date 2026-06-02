@@ -2,7 +2,6 @@ import asyncio
 import os
 import sys
 import time
-import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -226,8 +225,10 @@ class OpenAIClient:
                 return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error=err_str)
         else:
             elapsed = (time.monotonic() - start) * 1000
-            return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error=f"Rate limited after 3 retries: {err_str}")
+            return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error=f"Rate limited after 5 retries: {err_str}")
         elapsed = (time.monotonic() - start) * 1000
+        if not response.choices:
+            return LLMResponse(content="", usage=TokenUsage(), latency_ms=elapsed, error="Empty response: no choices returned")
         usage = response.usage
         # Track actual prompt tokens for rate limiting
         if usage and usage.prompt_tokens:
@@ -366,18 +367,17 @@ def select_provider():
         
         # Prompt if not in env, or always prompt when called again with addon model
         if not api_key or not endpoint:
+            from getpass import getpass
             console.print("[bold]Azure OpenAI Configuration:[/bold]")
             endpoint = input("AZURE_OPENAI_ENDPOINT (e.g., https://xxxx.openai.azure.com): ").strip() or endpoint
-            api_key = input("AZURE_OPENAI_API_KEY: ").strip() or api_key
+            api_key = getpass("AZURE_OPENAI_API_KEY: ").strip() or api_key
         deployment = input(f"AZURE_OPENAI_DEPLOYMENT_NAME (e.g., gpt-5.3-codex, Ministral-3B) [{deployment}]: ").strip() or deployment
         
         if not api_key or not endpoint:
             console.print("[red]Error: Azure OpenAI credentials required[/red]")
             sys.exit(1)
         
-        # Always update env so the fresh client picks up the right deployment
-        os.environ["AZURE_OPENAI_API_KEY"] = api_key or ""
-        os.environ["AZURE_OPENAI_ENDPOINT"] = endpoint or ""
+        # Store credentials on the client instance, not in os.environ
         os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = deployment
         
         client = LangChainAzureOpenAIClient()
@@ -393,17 +393,16 @@ def select_provider():
         
         # Prompt if not in env
         if not api_key or not endpoint:
+            from getpass import getpass
             console.print("[bold]Azure Anthropic Configuration:[/bold]")
             endpoint = input("AZURE_ANTHROPIC_ENDPOINT (e.g., https://xxxx.services.ai.azure.com): ").strip() or endpoint
-            api_key = input("AZURE_ANTHROPIC_API_KEY: ").strip() or api_key
+            api_key = getpass("AZURE_ANTHROPIC_API_KEY: ").strip() or api_key
         deployment = input(f"AZURE_ANTHROPIC_DEPLOYMENT_NAME [{deployment}]: ").strip() or deployment
         
         if not api_key or not endpoint:
             console.print("[red]Error: Azure Anthropic credentials required[/red]")
             sys.exit(1)
         
-        os.environ["AZURE_ANTHROPIC_API_KEY"] = api_key or ""
-        os.environ["AZURE_ANTHROPIC_ENDPOINT"] = endpoint or ""
         os.environ["AZURE_ANTHROPIC_DEPLOYMENT_NAME"] = deployment
         
         client = LangChainAzureAnthropicClient()
@@ -489,9 +488,18 @@ def select_provider():
         return client, model
 
     if choice == "m":
+        from urllib.parse import urlparse
         base_url = input("Base URL (e.g. http://localhost:1234/v1): ").strip()
+        parsed = urlparse(base_url)
+        if parsed.scheme not in ("http", "https"):
+            console.print("[red]Error: URL must start with http:// or https://[/red]")
+            sys.exit(1)
         model = input("Model name: ").strip()
-        api_key = input("API key (leave blank if none): ").strip()
+        if not model:
+            console.print("[red]Error: Model name is required[/red]")
+            sys.exit(1)
+        from getpass import getpass
+        api_key = getpass("API key (leave blank if none): ").strip()
         inject = input("Inject /no_think? (y/N): ").strip().lower() == "y"
         client = OpenAIClient(
             base_url=base_url,
@@ -518,7 +526,7 @@ def get_token_budget(model_name: str, safety_margin: int = 4000) -> int:
         "claude-sonnet-4-5": 200000,
         "claude-opus": 200000,
         "claude-haiku": 100000,
-        "Ministral-3B": 128000,
+        "Ministral-3B": 32768,
     }
     
     # Check exact match in MODEL_CONTEXT_LIMITS first

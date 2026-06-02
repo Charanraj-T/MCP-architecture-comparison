@@ -429,7 +429,8 @@ DOMAIN_TOOL_TEMPLATES = {
 
 def generate_mcps(count: int) -> list[dict]:
     mcps_per_domain = count // len(DOMAIN_TYPES)
-    assert count % len(DOMAIN_TYPES) == 0, f"Count {count} must be divisible by domain count {len(DOMAIN_TYPES)}"
+    if count % len(DOMAIN_TYPES) != 0:
+        raise ValueError(f"Count {count} must be divisible by domain count {len(DOMAIN_TYPES)}")
     mcps = []
     for domain in DOMAIN_TYPES:
         template_tools = DOMAIN_TOOL_TEMPLATES[domain]

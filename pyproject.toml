@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-architecture-review"
+version = "0.1.0"
+description = "Benchmark framework comparing MCP orchestration architectures (Centralized, Federated, Intent-Driven, Mediator, Multi-Agent) for scalability, cost, and tool-use efficiency."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Charanraj Thiyagarajan"},
+    {name = "Abhishek Jayaraman"},
+]
+keywords = ["mcp", "model-context-protocol", "benchmark", "architecture", "llm", "agentic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "mcp==1.27.0",
+    "openai==1.82.0",
+    "rich==14.0.0",
+    "tiktoken==0.9.0",
+    "httpx==0.28.1",
+    "aiosqlite==0.22.0",
+    "smartmcp-router==0.3.0",
+    "python-dotenv==1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0,<9.0",
+    "pytest-asyncio>=0.23,<1.0",
+    "ruff>=0.4,<1.0",
+    "mypy>=1.0,<2.0",
+]
+azure = [
+    "langchain-openai>=0.3,<1.0",
+    "langchain-anthropic>=0.3,<1.0",
+]
+all = ["mcp-architecture-review[dev,azure]"]
+
+[project.urls]
+Repository = "https://github.com/Charanraj-T/MCP-architecture-comparison"
+Issues = "https://github.com/Charanraj-T/MCP-architecture-comparison/issues"
+
+[tool.setuptools.packages.find]
+include = ["common*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests requiring running services",
+]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

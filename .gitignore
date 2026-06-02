@@ -1,15 +1,56 @@
+# Virtual environment
 .venv/
+
+# Environment files (contains secrets)
 .env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Bifrost
 .bifrost/
 .bifrost_*/
+
+# Output directories
 results/
 traces/
 reports/
+
+# Node
 node_modules/
+
+# Sandbox (experiment 2 test data)
 sandbox/
+
+# Database files
 *.db
 *.db-shm
 *.db-wal
+
+# MCP server configs (generated at runtime)
 *_config.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets / credentials
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/

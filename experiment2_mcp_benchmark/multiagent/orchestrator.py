@@ -1,28 +1,116 @@
+"""Multi-Agent orchestrator — supervisor decomposes, parallel workers execute."""
 import asyncio
 import json
 import tiktoken
 from pathlib import Path
-from common import LMStudioClient
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from common.client import OpenAIClient
 from metrics import WorkflowMetrics, JSONLogger, TraceCollector
-from multiagent.supervisor import DECOMPOSE_PROMPT, COMPILE_PROMPT
-from multiagent.workers.dev_worker import DevWorker
-from multiagent.workers.docs_worker import DocsWorker
-from multiagent.workers.data_worker import DataWorker
-from multiagent.workers.planning_worker import PlanningWorker
 
 _TRACE_DIR = str(Path(__file__).resolve().parent.parent / "traces")
 
-AGENT_MAP = {
-    "dev_agent": DevWorker,
-    "docs_agent": DocsWorker,
-    "data_agent": DataWorker,
-    "planning_agent": PlanningWorker,
+DECOMPOSE_PROMPT = (
+    "You are a supervisor. Decompose the task into domain-specific subtasks.\n"
+    "Available agents: dev_agent (code/files), docs_agent (documentation/web), "
+    "data_agent (database/SQL), planning_agent (reasoning/sequencing)\n"
+    'Output JSON array: [{"agent": "agent_name", "task": "subtask description"}]'
+)
+
+COMPILE_PROMPT = (
+    "You are a compiler. Given results from multiple specialist agents, "
+    "compile them into a single coherent answer.\n"
+    "Be concise and accurate. Combine insights from all agents."
+)
+
+AGENT_DOMAINS = {
+    "dev_agent": ["filesystem", "git"],
+    "docs_agent": ["fetch", "memory"],
+    "data_agent": ["data"],
+    "planning_agent": ["reasoning"],
 }
 
 
-class MultiAgentOrchestrator:
-    def __init__(self, client: LMStudioClient):
+class SimpleWorker:
+    """A lightweight domain worker that connects to specific MCP servers."""
+
+    def __init__(self, client, agent_name: str, mcp_connections: dict):
         self.client = client
+        self.agent_name = agent_name
+        self.connections = mcp_connections
+        self._enc = tiktoken.get_encoding("cl100k_base")
+
+    def _count_tokens(self, text: str) -> int:
+        return len(self._enc.encode(text))
+
+    async def run(self, task: str) -> dict:
+        tools_used = set()
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "hops": 0, "tool_calls": 0}
+
+        # Collect available tools from connected servers
+        available_tools = []
+        for server_key in AGENT_DOMAINS.get(self.agent_name, []):
+            conn = self.connections.get(server_key)
+            if conn and conn.tools:
+                for tool in conn.tools:
+                    available_tools.append(f"- {tool.name}: {tool.description}")
+
+        tools_text = "\n".join(available_tools) if available_tools else "No tools available."
+        system = (
+            f"You are a specialist agent ({self.agent_name}).\n\n"
+            f"Available tools:\n{tools_text}\n\n"
+            "To use a tool, respond with: TOOL_CALL: {\"name\": \"tool_name\", \"arguments\": {...}}\n"
+            "When done: FINAL_ANSWER: <your answer>"
+        )
+
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
+
+        for _turn in range(4):
+            response = await self.client.chat(messages, temperature=0.1, max_tokens=1024)
+            if response.error:
+                break
+            total_usage["prompt_tokens"] += response.usage.prompt_tokens
+            total_usage["completion_tokens"] += response.usage.completion_tokens
+            total_usage["reasoning_tokens"] += response.usage.reasoning_tokens
+            total_usage["total_tokens"] += response.usage.total_tokens
+            total_usage["latency_ms"] += response.latency_ms
+            total_usage["hops"] += 1
+
+            content = response.content or ""
+            # Simple TOOL_CALL parsing
+            if "TOOL_CALL:" in content:
+                try:
+                    start = content.index("TOOL_CALL:") + 10
+                    json_str = content[start:].strip().split("\n")[0]
+                    call = json.loads(json_str)
+                    name = call.get("name", "")
+                    # Execute via MCP connection
+                    for server_key, conn in self.connections.items():
+                        for tool in conn.tools:
+                            if tool.name == name:
+                                result = await conn.call_tool(name, call.get("args", {}))
+                                tools_used.add(name)
+                                total_usage["tool_calls"] += 1
+                                messages.append({"role": "assistant", "content": content})
+                                messages.append({"role": "user", "content": f"Result: {json.dumps(result)[:500]}\n\nContinue or FINAL_ANSWER:"})
+                                break
+                    else:
+                        messages.append({"role": "assistant", "content": content})
+                        break
+                except (json.JSONDecodeError, ValueError):
+                    messages.append({"role": "assistant", "content": content})
+                    break
+            else:
+                return {"agent": self.agent_name, "answer": content, "usage": total_usage, "tools_used": list(tools_used)}
+
+        return {"agent": self.agent_name, "answer": "", "usage": total_usage, "tools_used": list(tools_used)}
+
+
+class MultiAgentOrchestrator:
+    def __init__(self, client: OpenAIClient, mcp_connections: dict = None):
+        self.client = client
+        self.mcp_connections = mcp_connections or {}
         self.logger = JSONLogger(_TRACE_DIR)
         self.trace = TraceCollector()
         self._enc = tiktoken.get_encoding("cl100k_base")
@@ -32,7 +120,7 @@ class MultiAgentOrchestrator:
 
     async def _decompose(self, user_prompt: str) -> tuple[list[dict], object]:
         response = await self.client.chat(
-            [{"role": "user", "content": DECOMPOSE_PROMPT + user_prompt}],
+            [{"role": "user", "content": DECOMPOSE_PROMPT + "\n\n" + user_prompt}],
             temperature=0.1, max_tokens=512,
         )
         if response.error:
@@ -54,12 +142,20 @@ class MultiAgentOrchestrator:
                     depth -= 1
                     if depth == 0:
                         subtasks = json.loads(content[start:i+1])
-                        if isinstance(subtasks, list) and all(s.get("agent") in AGENT_MAP for s in subtasks):
+                        valid_agents = set(AGENT_DOMAINS.keys())
+                        if isinstance(subtasks, list) and all(s.get("agent") in valid_agents for s in subtasks):
                             return subtasks, response
                         return [{"agent": "dev_agent", "task": user_prompt}], response
             return [{"agent": "dev_agent", "task": user_prompt}], response
         except (ValueError, json.JSONDecodeError, KeyError):
             return [{"agent": "dev_agent", "task": user_prompt}], response
+
+    async def close(self):
+        for conn in self.mcp_connections.values():
+            try:
+                await conn.close()
+            except Exception:
+                pass
 
     async def run(self, workflow: dict) -> WorkflowMetrics:
         wf_name = workflow["name"]
@@ -83,8 +179,7 @@ class MultiAgentOrchestrator:
             agent = st.get("agent", "dev_agent")
             task = st.get("task", workflow["prompt"])
             active_agents.add(agent)
-            worker_class = AGENT_MAP[agent]
-            worker = worker_class(self.client)
+            worker = SimpleWorker(self.client, agent, self.mcp_connections)
             result = await worker.run(task)
             return result
 
